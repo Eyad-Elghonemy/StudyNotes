@@ -110,6 +110,22 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+# الحد الأدنى للمساحة الفاضية قبل ما نحذر المستخدم قبل بدء التسجيل (بالميجا).
+# FLAC خام بمعدل 16kHz/mono بياخد تقريباً ~1.8 ميجا/دقيقة، يعني 500 ميجا
+# بتغطي كذا ساعة تسجيل قبل أول ضغط لـ Opus - رقم متحفظ مش دقيق 100%.
+LOW_DISK_WARNING_MB = 500
+
+
+def check_disk_space_mb() -> float:
+    """بيرجع المساحة الفاضية بالميجابايت على نفس الـ drive بتاع RECORD_FOLDER.
+    بيرجع -1 لو فشل الفحص (بدل ما يوقف التسجيل بسبب فحص فشل)."""
+    try:
+        usage = shutil.disk_usage(RECORD_FOLDER)
+        return usage.free / (1024 * 1024)
+    except Exception:
+        return -1
+
+
 def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
     """
     يضغط ملف صوتي (FLAC/WAV) لصيغة Opus. بيرجع مسار الملف الجديد.
@@ -154,12 +170,40 @@ def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
 # تتبع حالة الأجزاء الصوتية (recorded / transcribed / explained)
 # =========================================================================
 
-def _audio_duration_seconds(path: Path) -> float:
+# حد أقصى منطقي لمدة أي جزء صوتي واحد بالدقايق. أي جزء أطول من كده فعليًا
+# مستحيل (الأجزاء بتتقفل تلقائي كل 30 دقيقة أثناء التسجيل - راجع
+# CHUNK_MINUTES في gui_app.py/record_session.py)، فأي رقم أكبر بكتير من
+# الحد ده معناه إن الملف تالف (header فيه قيمة garbage غالبًا بسبب قفل
+# غير سليم للملف - مثلاً البرنامج اتقفل فجأة أو اتقطع التيار وسط الكتابة)
+# - مش رقم حقيقي محتاج نقصّه/نقرّبه، لازم نعامله كبيانات تالفة صراحة بدل
+# ما نعرضه أو نحسبه في أي إجمالي. الحد هنا أكبر من الـ 30 دقيقة الفعلية
+# بهامش أمان (لو القيمة اتغيرت لاحقًا)، مش نسخة مكررة من نفس الرقم.
+MAX_SANE_CHUNK_MINUTES = 120
+
+
+def _audio_duration_seconds(path: Path) -> float | None:
+    """يرجع المدة بالثواني، أو None لو الملف تالف/المدة غير منطقية على
+    الإطلاق (بدل ما نرجع رقم غلط زي ما هو أو صفر مضلل)."""
     try:
         import soundfile as sf
-        return sf.info(str(path)).duration
+        duration = sf.info(str(path)).duration
     except Exception:
-        return 0.0
+        return None
+
+    if duration is None or duration < 0:
+        return None
+    if duration > MAX_SANE_CHUNK_MINUTES * 60:
+        return None  # مدة فلكية = بيانات تالفة في الـ header، مش رقم حقيقي
+    return duration
+
+
+def audio_duration_minutes_safe(path: Path) -> float | None:
+    """نفس فكرة _audio_duration_seconds بس بالدقايق ومتاحة برّه الموديول -
+    لازم تتستخدم في أي مكان بيحسب مدة ملف صوت مباشرة (بدل استدعاء
+    sf.info().duration مباشرة زي ما كان بيحصل في _start_processing)، عشان
+    الـ sanity check ضد الملفات التالفة يتطبق في كل مكان مش في list_lecture_chunks بس."""
+    seconds = _audio_duration_seconds(path)
+    return None if seconds is None else seconds / 60
 
 
 def list_lecture_chunks(lecture: str, state: dict) -> list[dict]:
@@ -167,6 +211,10 @@ def list_lecture_chunks(lecture: str, state: dict) -> list[dict]:
     يرجع كل جزء صوتي للمحاضرة دي، مع حالته وطوله وحجمه. لو نفس الجزء
     (نفس الـ timestamp) موجود بصيغتين (FLAC وOpus) بسبب باج قديم، بياخد
     الـ Opus بس ويتجاهل الـ FLAC المكرر عشان يمنع التفريغ المزدوج.
+
+    "corrupted": True معناها المدة اللي جاية من الملف نفسه غير منطقية
+    (غالبًا الملف اتقفل بشكل غير سليم) - الأجزاء دي بيتم استبعادها من أي
+    إجمالي (مدة/تقدير توكينز) في الواجهة، وميتحطش تحديدها تلقائي.
     """
     by_stem_prefix = {}  # timestamp -> path (بالأولوية لـ opus)
     for ext, priority in (("opus", 0), ("flac", 1), ("wav", 2)):
@@ -184,11 +232,13 @@ def list_lecture_chunks(lecture: str, state: dict) -> list[dict]:
         else:
             status = "recorded"
 
+        duration = _audio_duration_seconds(path)
         chunks.append({
             "filename": path.name,
             "path": path,
             "timestamp": ts,
-            "duration_sec": _audio_duration_seconds(path),
+            "duration_sec": duration if duration is not None else 0.0,
+            "corrupted": duration is None,
             "size_mb": round(path.stat().st_size / (1024 * 1024), 2),
             "status": status,
         })
@@ -196,13 +246,17 @@ def list_lecture_chunks(lecture: str, state: dict) -> list[dict]:
 
 
 def pending_summary(lecture: str, state: dict) -> dict:
-    """إجمالي مدة/حجم الأجزاء اللي لسه ماتفرغتش، لعرض تنبيه لو تراكم كتير."""
+    """إجمالي مدة/حجم الأجزاء اللي لسه ماتفرغتش، لعرض تنبيه لو تراكم كتير.
+    الأجزاء التالفة (corrupted) بتتستبعد من الإجمالي بالكامل - جمع مدة
+    تالفة مع مدد حقيقية بيبوظ الرقم النهائي كله، فبنعرضها بشكل منفصل."""
     chunks = list_lecture_chunks(lecture, state)
-    pending = [c for c in chunks if c["status"] == "recorded"]
+    pending = [c for c in chunks if c["status"] == "recorded" and not c["corrupted"]]
+    corrupted_pending = [c for c in chunks if c["status"] == "recorded" and c["corrupted"]]
     return {
         "count": len(pending),
         "total_minutes": round(sum(c["duration_sec"] for c in pending) / 60, 1),
         "total_mb": round(sum(c["size_mb"] for c in pending), 1),
+        "corrupted_count": len(corrupted_pending),
     }
 
 
@@ -272,7 +326,8 @@ def delete_lecture_data(
                 report["notes"] = True
             state["explained_files"] = []
             state["summarized_chars"] = 0
-            state.pop("_undo", None)
+            state.pop("_undo_stack", None)
+            state.pop("_undo", None)  # اسم قديم لباج قديم، احتياطي لو لسه موجود
 
         with get_lecture_lock(lecture):
             save_state(lecture, state)
