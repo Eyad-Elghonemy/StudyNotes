@@ -1,0 +1,10 @@
+numpy
+soundcard
+soundfile
+python-dotenv
+arabic-reshaper
+python-bidi
+markdown
+tkinterweb
+matplotlib
+google-genai

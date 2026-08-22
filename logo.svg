@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Background Gradient (Subtle depth on the deep indigo) -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1F1F35" />
+      <stop offset="100%" stop-color="#121220" />
+    </linearGradient>
+
+    <!-- Feather Gradient (Top-Right Teal to Bottom-Left Violet) -->
+    <linearGradient id="feather-grad" x1="750" y1="200" x2="260" y2="660" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4ecdc4" />
+      <stop offset="100%" stop-color="#9b59b6" />
+    </linearGradient>
+
+    <!-- Wave Gradient (Bottom-Left Violet transitioning back to Right-Side Teal) -->
+    <linearGradient id="wave-grad" x1="260" y1="0" x2="724" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#9b59b6" />
+      <stop offset="100%" stop-color="#4ecdc4" />
+    </linearGradient>
+
+    <!-- Subtle Glow Filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="30" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Canvas App Icon Base -->
+  <rect width="1024" height="1024" fill="url(#bg-grad)" rx="225" />
+
+  <!-- Subtle Background Tech Rings -->
+  <circle cx="512" cy="512" r="300" fill="none" stroke="#ffffff" stroke-width="1.5" opacity="0.03" />
+  <circle cx="512" cy="512" r="450" fill="none" stroke="#ffffff" stroke-width="1.5" opacity="0.02" />
+
+  <!-- Main Composition Group (Mathematically Centered) -->
+  <g transform="translate(-8, 35)">
+    
+    <!-- 1. Glow Layer -->
+    <g opacity="0.4" filter="url(#glow)">
+      <!-- Feather Silhouette -->
+      <path d="M 720 200 C 570 200, 300 470, 300 620 C 470 620, 720 350, 720 200 Z" fill="url(#feather-grad)" />
+      
+      <!-- Flowing Ink Swoosh -->
+      <path d="M 260 660 C 250 710, 280 750, 330 750" fill="none" stroke="url(#wave-grad)" stroke-width="6" stroke-linecap="round" />
+      
+      <!-- Audio Wave Bars (Duplicated for Glow) -->
+      <g stroke="url(#wave-grad)" stroke-width="14" stroke-linecap="round">
+        <line x1="416" y1="720" x2="416" y2="780" />
+        <line x1="472" y1="725" x2="472" y2="775" />
+        <line x1="500" y1="695" x2="500" y2="805" />
+        <line x1="556" y1="680" x2="556" y2="820" />
+        <line x1="612" y1="700" x2="612" y2="800" />
+        <line x1="668" y1="738" x2="668" y2="762" />
+      </g>
+    </g>
+
+    <!-- 2. Solid Feather Base -->
+    <path d="M 720 200 C 570 200, 300 470, 300 620 C 470 620, 720 350, 720 200 Z" fill="url(#feather-grad)" />
+
+    <!-- 3. Geometric Negative Space Cuts (Matching the background color to slice the feather) -->
+    <g stroke="#161626" stroke-width="12" stroke-linecap="round">
+      <line x1="450" y1="150" x2="750" y2="450" />
+      <line x1="350" y1="250" x2="650" y2="550" />
+      <line x1="250" y1="350" x2="550" y2="650" />
+    </g>
+
+    <!-- 4. Central Quill Shaft (Negative Space) -->
+    <line x1="740" y1="180" x2="260" y2="660" stroke="#161626" stroke-width="14" stroke-linecap="round" />
+
+    <!-- 5. Glowing Inner Shaft Filament -->
+    <line x1="735" y1="185" x2="260" y2="660" stroke="url(#feather-grad)" stroke-width="4" stroke-linecap="round" />
+    
+    <!-- 6. Fountain Pen Breather Hole -->
+    <circle cx="290" cy="630" r="3.5" fill="#161626" />
+
+    <!-- 7. Ink Swoosh Flowing from Nib -->
+    <path d="M 260 660 C 250 710, 280 750, 330 750" fill="none" stroke="url(#wave-grad)" stroke-width="6" stroke-linecap="round" />
+    <circle cx="345" cy="750" r="4" fill="url(#wave-grad)" />
+
+    <!-- 8. Audio Waveform Bars (Representing Speech/Audio) -->
+    <g stroke="url(#wave-grad)" stroke-width="14" stroke-linecap="round">
+      <line x1="360" y1="742" x2="360" y2="758" />
+      <line x1="388" y1="735" x2="388" y2="765" />
+      <line x1="416" y1="720" x2="416" y2="780" />
+      <line x1="444" y1="710" x2="444" y2="790" />
+      <line x1="472" y1="725" x2="472" y2="775" />
+      <line x1="500" y1="695" x2="500" y2="805" />
+      <line x1="528" y1="715" x2="528" y2="785" />
+      <line x1="556" y1="680" x2="556" y2="820" /> <!-- Amplitude Peak -->
+      <line x1="584" y1="710" x2="584" y2="790" />
+      <line x1="612" y1="700" x2="612" y2="800" />
+      <line x1="640" y1="725" x2="640" y2="775" />
+      <line x1="668" y1="738" x2="668" y2="762" />
+      <line x1="696" y1="745" x2="696" y2="755" />
+      <line x1="724" y1="748" x2="724" y2="752" />
+    </g>
+
+    <!-- 9. Abstract Academic/Tech Particles -->
+    <g fill="url(#feather-grad)">
+      <circle cx="680" cy="180" r="3" />
+      <circle cx="760" cy="280" r="2.5" />
+      <circle cx="280" cy="720" r="2.5" />
+      <circle cx="330" cy="680" r="1.5" />
+      <circle cx="580" cy="240" r="2" />
+    </g>
+
+    <g stroke="url(#feather-grad)" stroke-width="1.5" stroke-linecap="round">
+      <line x1="797" y1="220" x2="803" y2="220" />
+      <line x1="800" y1="217" x2="800" y2="223" />
+      <line x1="237" y1="580" x2="243" y2="580" />
+      <line x1="240" y1="577" x2="240" y2="583" />
+    </g>
+  </g>
+</svg>
