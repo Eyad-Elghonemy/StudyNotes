@@ -95,7 +95,13 @@ def record_worker(lecture: str):
     except Exception as e:
         print(f"[!] تحذير: حصلت مشكلة أثناء الكتابة: {e}")
     finally:
-        f.close()
+        # لازم نتأكد من قفل الملف دايماً حتى لو حصل استثناء نص الكتابة
+        # (زي امتلاء الديسك) - وإلا الملف بيفضل مفتوح/مقفول من نظام
+        # التشغيل ومينفعش يتقرأ أو يتضغط بعد كده.
+        try:
+            f.close()
+        except Exception:
+            pass
         print(f"[✓] آخر جزء اتحفظ: {current_path.name}")
         # نضغط آخر جزء برضه (بشكل متزامن هنا عشان نستناه قبل ما نكمل)
         _compress_in_background(current_path)
@@ -105,12 +111,10 @@ def main():
     lecture = pick_lecture_name()
     print(f"\n[i] المحاضرة المختارة: {lecture}")
 
-    threads = [
-        threading.Thread(target=capture_system_audio, daemon=True),
-        threading.Thread(target=record_worker, args=(lecture,), daemon=True),
-    ]
-    for t in threads:
-        t.start()
+    capture_thread = threading.Thread(target=capture_system_audio, daemon=True)
+    write_thread = threading.Thread(target=record_worker, args=(lecture,), daemon=True)
+    capture_thread.start()
+    write_thread.start()
 
     print(f"[i] التسجيل هيتقسم أوتوماتيك كل {CHUNK_MINUTES} دقيقة.")
     print("[i] شغّل الفيديو/الاجتماع دلوقتي. اضغط Ctrl+C لما توقف.")
@@ -120,7 +124,10 @@ def main():
     except KeyboardInterrupt:
         print("\n[!] جاري إيقاف التسجيل...")
         stop_flag.set()
-        time.sleep(2)  # نستنى الجزء الأخير يتقفل ويتضغط
+        # نستنى فعلياً لحد ما الثريد يقفل الجزء الأخير ويضغطه، بدل تخمين
+        # وقت ثابت ممكن يكون أقصر من اللازم (يبوظ آخر جزء) أو أطول من
+        # اللازم من غير داعي.
+        write_thread.join(timeout=60)
 
     answer = input(
         "\nعايز تفريغ وتلخيص للي اتفرجت عليه لحد دلوقتي؟ (y/n): "
