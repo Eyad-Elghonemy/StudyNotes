@@ -64,7 +64,7 @@ from state_manager import (
 )
 import process_lecture
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30
@@ -73,7 +73,7 @@ LONG_RECORDING_REMINDER_MINUTES = 120  # تنبيه (مش إيقاف) كل سا�
 STATUS_LABELS = {
     "recorded": "متسجل بس",
     "transcribed": "متفرّغ",
-    "explained": "متفرّغ ومتلخص",
+    "explained": "متفرّغ ومتشرّح",
 }
 STATUS_COLORS = {
     "recorded": "#8a8f98",
@@ -247,7 +247,7 @@ LRI = "\u2066"  # Left-to-Right Isolate
 PDI = "\u2069"  # Pop Directional Isolate
 
 _NON_ARABIC_RUN_RE = re.compile(
-    r"[A-Za-z0-9\(\)\[\]\-_./:%→←↔⚠✓✗🎧🔴⏱⏳✅💡🗑↩📌📋]+"
+    r"[A-Za-z0-9\(\)\[\]\-_./:%→←↔⚠✓✗🎧🔊🔴⏱⏳✅💡🗑↩📌📋]+"
     r"(?:[ \t]+[A-Za-z0-9\(\)\[\]\-_./:%→←↔]+)*"
 )
 
@@ -257,6 +257,23 @@ def _isolate_ltr_runs(text: str) -> str:
     خوارزمية bidi تعامله كوحدة منفصلة، بدل ما تدمجه جوه سياق العربي وتكسر
     ترتيب الأقواس/الأسهم اللي جواه."""
     return _NON_ARABIC_RUN_RE.sub(lambda m: f"{LRI}{m.group(0)}{PDI}", text)
+
+
+_HEADPHONE_NAME_KEYWORDS = (
+    "headphone", "headset", "earphone", "earbud", "airpods",
+    "buds", "wh-", "سماعة", "سماعات",
+)
+
+
+def _device_type_emoji(device_name: str) -> str:
+    """ايموجي تقريبي حسب نوع جهاز الإخراج الحالي، بناءً على اسمه: 🎧
+    للسماعات (headphone/headset/earbuds...)، 🔊 لأي حاجة تانية (سبيكرز
+    الجهاز، شاشة خارجية، إلخ). مفيش API في soundcard بيوضح نوع الجهاز
+    الفعلي، فده أفضل تقريب متاح من الاسم بس."""
+    name = (device_name or "").lower()
+    if any(kw in name for kw in _HEADPHONE_NAME_KEYWORDS):
+        return "🎧"
+    return "🔊"
 
 
 def _get_default_app_name(ext: str = ".md") -> str:
@@ -328,6 +345,60 @@ class StudyApp:
 
         process_lecture.set_logger(self._log_threadsafe)
         process_lecture.set_progress_callback(self._progress_threadsafe)
+
+        self._refresh_api_status_label()
+        # نأجل الفحوصات دي شوية عشان الواجهة الرئيسية تكمل تظهر وترسم الأول
+        # (خصوصًا نافذة إعداد أول تشغيل - المفروض تظهر فوق واجهة ظاهرة
+        # بالفعل، مش قبلها).
+        self.root.after(150, self._startup_checks)
+
+    # ---------------------------------------------------------- Startup checks
+    def _startup_checks(self):
+        """فحوصات أول تشغيل: مفاتيح API، ffmpeg، جهاز صوت افتراضي - كل
+        واحدة بتوريك تنبيه واضح أول ما البرنامج يفتح بدل ما تكتشفها بعد
+        فشل عملية كاملة."""
+        import first_run_setup
+        if not first_run_setup.keys_configured():
+            first_run_setup.show_dialog(self.root, PALETTE, on_done=self._on_first_run_setup_done)
+            return  # النافذة دي إجبارية - باقي الفحوصات هتتنفذ بعدها لو كمّل
+
+        if not ffmpeg_available():
+            show_warning(
+                "ffmpeg مش متثبت",
+                "ffmpeg مش موجود على جهازك. البرنامج هيشتغل عادي، بس ملفات "
+                "الصوت هتفضل FLAC (حجم أكبر بكتير) بدل ما تتضغط تلقائي لـ Opus.\n\n"
+                "لتثبيته على ويندوز: افتح Terminal واكتب winget install ffmpeg",
+            )
+
+        try:
+            sc.default_speaker()
+        except Exception:
+            show_warning(
+                "مفيش جهاز صوت افتراضي",
+                "مقدرش ألاقي جهاز إخراج صوت افتراضي على الجهاز ده. التسجيل "
+                "مش هيشتغل صح لحد ما يبقى فيه جهاز صوت متوصل ومفعّل.",
+            )
+
+    def _on_first_run_setup_done(self, gemini_saved, groq_saved, gemini_rejected, groq_rejected):
+        self._refresh_api_status_label()
+        saved = [n for n, ok in (("Gemini", gemini_saved), ("Groq", groq_saved)) if ok]
+        if saved:
+            self._log(f"✓ تم حفظ مفتاح/مفاتيح API بنجاح: {'، '.join(saved)}")
+        if gemini_rejected:
+            self._log("⚠ مفتاح Gemini اللي دخلته مش صالح - اتجاهل. تقدر تضيفه لاحقًا في ملف .env يدويًا.")
+        if groq_rejected:
+            self._log("⚠ مفتاح Groq اللي دخلته مش صالح - اتجاهل. تقدر تضيفه لاحقًا في ملف .env يدويًا.")
+        # نكمّل باقي فحوصات أول تشغيل (ffmpeg / جهاز الصوت) بعد ما نافذة
+        # المفاتيح تقفل
+        self.root.after(100, self._startup_checks)
+
+    def _refresh_api_status_label(self):
+        gemini_ok = bool(process_lecture.GEMINI_API_KEY.strip())
+        groq_ok = bool(process_lecture.GROQ_API_KEY.strip())
+        gemini_text = f"Gemini {'✓' if gemini_ok else '✗'}"
+        groq_text = f"Groq {'✓' if groq_ok else '✗'}"
+        color = PALETTE["success"] if (gemini_ok or groq_ok) else PALETTE["danger"]
+        self.api_status_label.config(text=f"🔑 {gemini_text}  |  {groq_text}", foreground=color)
 
     # ---------------------------------------------------------- Style
     def _setup_style(self):
@@ -459,6 +530,22 @@ class StudyApp:
         self.pending_badge = ttk.Label(frame_top, text="", style="Badge.TLabel", background=PALETTE["card"])
         self.pending_badge.pack(side="right", padx=12)
 
+        # حالة مفاتيح الـ API الحالية - عشان المستخدم يعرف من أول نظرة لو
+        # في مزوّد ناقص، بدل ما يكتشف بس وقت فشل عملية تفريغ/تلخيص
+        self.api_status_label = ttk.Label(
+            frame_top, text="", background=PALETTE["card"], font=("Segoe UI", 9, "bold"),
+        )
+        self.api_status_label.pack(side="left", padx=12)
+        _add_tooltip(self.api_status_label, "حالة مفاتيح Gemini/Groq الحالية من ملف .env")
+
+        settings_btn = self._card_button(
+            frame_top, "⚙ الموديلات", self._show_model_settings_dialog,
+            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
+            font=("Segoe UI", 9, "bold"), padx=10, pady=5,
+        )
+        settings_btn.pack(side="left", padx=(0, 4))
+        _add_tooltip(settings_btn, "اختيار موديل التفريغ وموديل التلخيص/النوتس يدويًا")
+
         # ---------- التحكم في التسجيل ----------
         frame_controls = ttk.LabelFrame(self.root, text="⏺ التسجيل", style="Card.TLabelframe")
         frame_controls.pack(fill="x", **pad)
@@ -549,49 +636,77 @@ class StudyApp:
         frame_process = ttk.LabelFrame(self.root, text="📝 التفريغ والنوتس", style="Card.TLabelframe")
         frame_process.pack(fill="x", **pad)
 
-        # الزرار الأهم (فرّغ + حوّل لنوتس) في صف لوحده، بارز بشكل واضح
-        # عن باقي الزراير - هو اللي هيتستخدم في الأغلبية الساحقة من المرات.
+        # الزرار الأهم بقى زرارين - كل واحد بياخد أسلوب مخرجات مختلف تمامًا
+        # (راجع EXPLAIN_PROMPT مقابل MEETING_NOTES_PROMPT في process_lecture.py):
+        # الأول لأسلوب "شرح محاضرة تعليمي" والتاني لأسلوب "محضر اجتماع مختصر".
         row_primary = ttk.Frame(frame_process, style="Card.TFrame")
         row_primary.pack(fill="x", padx=10, pady=(6, 3))
+        row_primary.columnconfigure(0, weight=1)
+        row_primary.columnconfigure(1, weight=1)
 
-        self.btn_primary = self._card_button(
-            row_primary, "🔄  فرّغ + حوّل المحدد لنوتس (الكل مع بعض)",
-            lambda: self._start_processing(True),
+        self.btn_primary_lecture = self._card_button(
+            row_primary, "🎓  فرّغ + لخص المحاضرة",
+            lambda: self._start_processing(True, mode="lecture"),
             PALETTE["success"], PALETTE["success_dark"],
             font=("Segoe UI", 11, "bold"),
         )
-        self.btn_primary.pack(fill="x")
-        _add_tooltip(self.btn_primary, "الخطوة الأساسية: تفريغ الأجزاء المحددة، وتحويلها مباشرة لنوتس Markdown كعملية واحدة")
+        self.btn_primary_lecture.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        _add_tooltip(
+            self.btn_primary_lecture,
+            "تفريغ الأجزاء المحددة، وتحويلها لنوتس بأسلوب شرح تعليمي منظم (عناوين، تفصيل، صناديق تمييز كاملة)",
+        )
+
+        self.btn_primary_meeting = self._card_button(
+            row_primary, "🤝  فرّغ + خد نوتس",
+            lambda: self._start_processing(True, mode="meeting"),
+            PALETTE["info"], PALETTE["info_dark"],
+            font=("Segoe UI", 11, "bold"),
+        )
+        self.btn_primary_meeting.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        _add_tooltip(
+            self.btn_primary_meeting,
+            "تفريغ الأجزاء المحددة، وتحويلها لمحضر اجتماع مختصر (ملخص، قرارات، مهام، مواعيد) بدل شرح تعليمي مطوّل",
+        )
 
         # صف ثانوي: أفعال معالجة بديلة أقل استخداماً (تفريغ لوحده / نوتس
-        # من نص موجود بالفعل)
+        # من نص موجود بالفعل) - التلاتة دلوقتي في صف واحد وبنفس لون العائلة
+        # الهادئة (accent_soft) عشان يبانوا كمجموعة واحدة متناسقة، مختلفة
+        # بصريًا عن زرارين الأهمية القصوى فوقهم.
         row_secondary = ttk.Frame(frame_process, style="Card.TFrame")
         row_secondary.pack(fill="x", padx=10, pady=4)
         row_secondary.columnconfigure(0, weight=1)
         row_secondary.columnconfigure(1, weight=1)
+        row_secondary.columnconfigure(2, weight=1)
 
-        # زراير تانوية (Tier 2 بصرياً): أصغر شوية من الرئيسي وبشكل مختلف
-        # (حواف بارزة/ridge بدل مسطح تماماً) عشان تبان أوضح إنها أقل أهمية
-        # من الزرار الرئيسي فوقها، وألوان أهدأ (soft) بدل الألوان الكاملة.
         btn_transcribe = self._card_button(
-            row_secondary, "✍  فرّغ فقط (بدون نوتس)",
+            row_secondary, "✍  فرّغ فقط",
             lambda: self._start_processing(False),
-            PALETTE["info_soft"], PALETTE["info_soft_dark"],
+            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
             font=("Segoe UI", 9, "bold"),
-            relief="ridge", bd=2, padx=10, pady=6,
+            relief="ridge", bd=2, padx=8, pady=6,
         )
-        btn_transcribe.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        btn_transcribe.grid(row=0, column=0, sticky="ew", padx=(0, 3))
         _add_tooltip(btn_transcribe, "تفريغ الأجزاء المحددة لنص خام فقط، من غير تحويل لنوتس")
 
         btn_notes_only = self._card_button(
-            row_secondary, "🧠  حوّل لنوتس بس (بدون تفريغ)",
-            self._start_notes_only,
-            PALETTE["success_soft"], PALETTE["success_soft_dark"],
+            row_secondary, "🎓  لخص فقط",
+            lambda: self._start_notes_only(mode="lecture"),
+            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
             font=("Segoe UI", 9, "bold"),
-            relief="ridge", bd=2, padx=10, pady=6,
+            relief="ridge", bd=2, padx=8, pady=6,
         )
-        btn_notes_only.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        _add_tooltip(btn_notes_only, "تحويل النص المفرّغ الموجود بالفعل لنوتس، من غير تفريغ صوت جديد")
+        btn_notes_only.grid(row=0, column=1, sticky="ew", padx=3)
+        _add_tooltip(btn_notes_only, "تحويل النص المفرّغ الموجود بالفعل لنوتس بأسلوب شرح تعليمي، من غير تفريغ صوت جديد")
+
+        btn_notes_only_meeting = self._card_button(
+            row_secondary, "🤝  حوّل لنوتس بس",
+            lambda: self._start_notes_only(mode="meeting"),
+            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
+            font=("Segoe UI", 9, "bold"),
+            relief="ridge", bd=2, padx=8, pady=6,
+        )
+        btn_notes_only_meeting.grid(row=0, column=2, sticky="ew", padx=(3, 0))
+        _add_tooltip(btn_notes_only_meeting, "تحويل النص المفرّغ الموجود بالفعل لمحضر اجتماع مختصر، من غير تفريغ صوت جديد")
 
         # صف عرض النتيجة (Tier 3): أهم من زراير المسح/التراجع تحته، بس
         # أقل من زراير المعالجة فوقه - ألوان أهدأ برضه (soft) للتفرقة.
@@ -756,6 +871,125 @@ class StudyApp:
                 self.progress_bar["value"] = 0
                 self.progress_label.config(text="")
         self.root.after(0, update)
+
+    # ---------------------------------------------------------- Model settings
+    def _show_model_settings_dialog(self):
+        win = tk.Toplevel(self.root)
+        win.title("Model Settings")
+        win.configure(bg=PALETTE["bg"])
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+
+        WIDTH = 460
+
+        # ---------- Header ----------
+        header = tk.Frame(win, bg=PALETTE["accent"], width=WIDTH)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=64)
+        tk.Label(
+            header, text="⚙  Model Settings", bg=PALETTE["accent"], fg="white",
+            font=("Segoe UI", 14, "bold"), anchor="w",
+        ).pack(side="left", padx=20, pady=14)
+
+        body = tk.Frame(win, bg=PALETTE["bg"])
+        body.pack(fill="both", expand=True, padx=20, pady=(16, 8))
+
+        tk.Label(
+            body,
+            text="Pick the model you prefer for each task. If it times out or "
+                 "fails, the app automatically falls back to the other one for you.",
+            bg=PALETTE["bg"], fg=PALETTE["text_muted"],
+            font=("Segoe UI", 9), justify="left", wraplength=WIDTH - 40,
+        ).pack(anchor="w", pady=(0, 14))
+
+        def _add_choice_card(icon, title, subtitle, accent_color, choices_dict, current_key, on_change):
+            card = tk.Frame(
+                body, bg=PALETTE["card"], highlightthickness=1,
+                highlightbackground=PALETTE["border"], highlightcolor=PALETTE["border"],
+            )
+            card.pack(fill="x", pady=(0, 12))
+
+            # colored accent strip on the left of the card
+            strip = tk.Frame(card, bg=accent_color, width=5)
+            strip.pack(side="left", fill="y")
+
+            inner = tk.Frame(card, bg=PALETTE["card"])
+            inner.pack(side="left", fill="both", expand=True, padx=16, pady=14)
+
+            title_row = tk.Frame(inner, bg=PALETTE["card"])
+            title_row.pack(fill="x", anchor="w")
+            tk.Label(
+                title_row, text=icon, bg=PALETTE["card"], fg=accent_color,
+                font=("Segoe UI", 14),
+            ).pack(side="left")
+            tk.Label(
+                title_row, text=title, bg=PALETTE["card"], fg=PALETTE["text"],
+                font=("Segoe UI", 10, "bold"),
+            ).pack(side="left", padx=(8, 0))
+
+            tk.Label(
+                inner, text=subtitle, bg=PALETTE["card"], fg=PALETTE["text_muted"],
+                font=("Segoe UI", 8), justify="left",
+            ).pack(anchor="w", pady=(2, 8))
+
+            display_to_key = {v[0]: k for k, v in choices_dict.items()}
+            var = tk.StringVar(value=choices_dict[current_key][0])
+            combo = ttk.Combobox(
+                inner, textvariable=var, values=list(display_to_key.keys()),
+                state="readonly", width=44, justify="left",
+                style="Settings.TCombobox",
+            )
+            combo.pack(anchor="w", fill="x")
+            combo.bind("<<ComboboxSelected>>", lambda e: on_change(display_to_key[var.get()]))
+            return var
+
+        style = ttk.Style(win)
+        style.configure("Settings.TCombobox", padding=6)
+
+        _add_choice_card(
+            "🎙", "Speech-to-Text Model", "Used to transcribe recorded audio into raw text.",
+            PALETTE["info"],
+            process_lecture.TRANSCRIBE_MODEL_CHOICES,
+            process_lecture.TRANSCRIBE_MODEL_CHOICE,
+            self._on_transcribe_model_changed,
+        )
+
+        _add_choice_card(
+            "🧠", "Summarization / Notes Model", "Used to turn the transcript into organized notes.",
+            PALETTE["success"],
+            process_lecture.SUMMARY_MODEL_CHOICES,
+            process_lecture.SUMMARY_MODEL_CHOICE,
+            self._on_summary_model_changed,
+        )
+
+        tk.Label(
+            body,
+            text="Changes apply and save instantly (to .env) — no restart needed.",
+            bg=PALETTE["bg"], fg=PALETTE["text_muted"],
+            font=("Segoe UI", 8, "italic"), justify="left", wraplength=WIDTH - 40,
+        ).pack(anchor="w", pady=(2, 4))
+
+        footer = tk.Frame(win, bg=PALETTE["bg"])
+        footer.pack(fill="x", padx=20, pady=(8, 18))
+        close_btn = self._card_button(
+            footer, "Done", win.destroy, PALETTE["accent"], PALETTE["accent_dark"],
+        )
+        close_btn.pack(side="right")
+
+        win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def _on_transcribe_model_changed(self, choice_key: str):
+        process_lecture.set_transcribe_model_choice(choice_key)
+        self._log(f"🎙 موديل التفريغ اتغيّر لـ: {process_lecture.TRANSCRIBE_MODEL_CHOICES[choice_key][0]}")
+
+    def _on_summary_model_changed(self, choice_key: str):
+        process_lecture.set_summary_model_choice(choice_key)
+        self._log(f"🧠 موديل التلخيص اتغيّر لـ: {process_lecture.SUMMARY_MODEL_CHOICES[choice_key][0]}")
 
     # ---------------------------------------------------------- Lectures
     def _refresh_lecture_list(self):
@@ -1041,7 +1275,7 @@ class StudyApp:
 
         try:
             recorder_ctx, mic = _open_recorder_for_current_device()
-            self._log_threadsafe(f"🎧 بيسجل من: {current_device_name}")
+            self._log_threadsafe(f"{_device_type_emoji(current_device_name)} بيسجل من: {current_device_name}")
 
             while not self.stop_flag.is_set():
                 # چيك خفيف كل دورة (~ثانية) - هل جهاز الإخراج الافتراضي اتغيّر؟
@@ -1061,7 +1295,7 @@ class StudyApp:
                         pass
                     try:
                         recorder_ctx, mic = _open_recorder_for_current_device()
-                        self._log_threadsafe(f"🎧 اتبدل ويسجل دلوقتي من: {current_device_name}")
+                        self._log_threadsafe(f"{_device_type_emoji(current_device_name)} اتبدل ويسجل دلوقتي من: {current_device_name}")
                     except Exception as e:
                         self._log_threadsafe(f"⚠ فشل التبديل للجهاز الجديد: {e} - بيحاول تاني")
                         time.sleep(1)
@@ -1086,7 +1320,7 @@ class StudyApp:
                     time.sleep(0.5)
                     try:
                         recorder_ctx, mic = _open_recorder_for_current_device()
-                        self._log_threadsafe(f"🎧 رجع يسجل من: {current_device_name}")
+                        self._log_threadsafe(f"{_device_type_emoji(current_device_name)} رجع يسجل من: {current_device_name}")
                     except Exception as e2:
                         self._log_threadsafe(f"⚠ لسه مش قادر يوصل لجهاز صوت: {e2}")
                         time.sleep(1)
@@ -1118,8 +1352,8 @@ class StudyApp:
         frames_written = 0
         self._log_threadsafe(f"التسجيل هيتحفظ في: {current_path.name}")
 
+        f = sf.SoundFile(str(current_path), mode="w", samplerate=SAMPLE_RATE, channels=1, format="FLAC")
         try:
-            f = sf.SoundFile(str(current_path), mode="w", samplerate=SAMPLE_RATE, channels=1, format="FLAC")
             while not self.stop_flag.is_set() or not self.audio_queue.empty():
                 try:
                     chunk = self.audio_queue.get(timeout=1)
@@ -1137,20 +1371,29 @@ class StudyApp:
                     self._log_threadsafe(f"جزء جديد بدأ (بعد {CHUNK_MINUTES} min): {current_path.name}")
                     f = sf.SoundFile(str(current_path), mode="w", samplerate=SAMPLE_RATE, channels=1, format="FLAC")
 
-            f.close()
-            self._compress_chunk_background(current_path)
-
         except Exception as e:
             self._log_threadsafe(f"⚠ مشكلة في حفظ التسجيل: {e}")
+        finally:
+            # لازم نتأكد من قفل الملف دايماً حتى لو حصل استثناء نص الكتابة
+            # (زي امتلاء الديسك) - وإلا الملف بيفضل مقفول من نظام التشغيل
+            # ومينفعش يتضغط أو يتفرّغ بعد كده من غير إعادة تشغيل البرنامج.
+            try:
+                f.close()
+            except Exception:
+                pass
+            self._compress_chunk_background(current_path)
 
     # ---------------------------------------------------------- Process
-    def _start_processing(self, explain: bool):
+    def _start_processing(self, explain: bool, mode: str = "lecture"):
         lecture = self.current_lecture
         if not lecture:
             show_warning("تنبيه", "اختار محاضرة/جلسة الأول.")
             return
         if self.recording:
             show_warning("تنبيه", "وقّف التسجيل الأول قبل ما تبدأ التفريغ.")
+            return
+        if self._processing:
+            show_warning("تنبيه", "فيه عملية تفريغ/تلخيص شغالة بالفعل - استنى تخلص الأول.")
             return
 
         selected = self._get_selected_paths()
@@ -1203,7 +1446,7 @@ class StudyApp:
             return
 
         self._log(f"بدأ {action_desc} لـ {len(clean)} جزء/أجزاء (إجمالي {total_minutes:.1f} min)...")
-        threading.Thread(target=self._process_worker, args=(lecture, clean, explain), daemon=True).start()
+        threading.Thread(target=self._process_worker, args=(lecture, clean, explain, mode), daemon=True).start()
 
     def _begin_processing(self):
         self._processing = True
@@ -1221,7 +1464,7 @@ class StudyApp:
             self._cancel_processing_event.set()
             self._log("🛑 طلب إلغاء - هيوقف بعد ما يخلص الجزء الحالي...")
 
-    def _process_worker(self, lecture: str, selected_paths: list, explain: bool):
+    def _process_worker(self, lecture: str, selected_paths: list, explain: bool, mode: str = "lecture"):
         self._begin_processing()
         try:
             state = load_state(lecture)
@@ -1233,7 +1476,7 @@ class StudyApp:
                 return
 
             if explain and not self._cancel_processing_event.is_set():
-                process_lecture.summarize_new_part(lecture, full_text, state)
+                process_lecture.summarize_new_part(lecture, full_text, state, mode=mode)
                 self._log_threadsafe(f"✓ خلص! النوتس محفوظة في: {MARKDOWN_FOLDER / (lecture + '.md')}")
             elif not explain:
                 self._log_threadsafe(f"✓ خلص التفريغ! النص الخام في: {TRANSCRIPT_FOLDER / (lecture + '.txt')}")
@@ -1247,10 +1490,13 @@ class StudyApp:
             self._progress_threadsafe(0, 0)
 
     # ---------------------------------------------------------- Notes-only (no re-transcribe)
-    def _start_notes_only(self):
+    def _start_notes_only(self, mode: str = "lecture"):
         lecture = self.current_lecture
         if not lecture:
             show_warning("تنبيه", "اختار محاضرة/جلسة الأول.")
+            return
+        if self._processing:
+            show_warning("تنبيه", "فيه عملية تفريغ/تلخيص شغالة بالفعل - استنى تخلص الأول.")
             return
 
         transcript_path = TRANSCRIPT_FOLDER / f"{lecture}.txt"
@@ -1259,9 +1505,11 @@ class StudyApp:
             return
 
         self._log("بدأ تحويل النص المفرّغ الموجود لنوتس (من غير تفريغ صوت إضافي)...")
-        threading.Thread(target=self._notes_only_worker, args=(lecture, transcript_path), daemon=True).start()
+        threading.Thread(
+            target=self._notes_only_worker, args=(lecture, transcript_path, mode), daemon=True
+        ).start()
 
-    def _notes_only_worker(self, lecture: str, transcript_path):
+    def _notes_only_worker(self, lecture: str, transcript_path, mode: str = "lecture"):
         self._begin_processing()
         try:
             state = load_state(lecture)
@@ -1272,7 +1520,7 @@ class StudyApp:
                 self._log_threadsafe("النص الخام فاضي.")
                 return
 
-            process_lecture.summarize_new_part(lecture, full_text, state)
+            process_lecture.summarize_new_part(lecture, full_text, state, mode=mode)
             self._log_threadsafe(f"✓ خلص! النوتس محفوظة في: {MARKDOWN_FOLDER / (lecture + '.md')}")
             self.root.after(0, _beep)
 
@@ -1365,13 +1613,27 @@ class StudyApp:
 
         header = tk.Frame(list_outer, bg=PALETTE["card"])
         header.pack(fill="x", pady=(0, 2))
+        # الهيدر بيتحط جوه wrapper بعرض ثابت (= مجموع عرض الأعمدة بالظبط)
+        # ومربوط بـ side="left" - يعني بداياه دايمًا من x=0 في list_outer.
+        # الصفوف تحت (inner جوه الـ canvas) برضه متحطة بـ anchor="nw" يعني
+        # بداياها من x=0 في الـ canvas، والـ canvas نفسه بياخد نفس عرض
+        # list_outer بالظبط (fill="both", expand=True). فبكده الاتنين
+        # (الهيدر وصفوف البيانات) بيبدأوا من نفس نقطة x=0 تمامًا، فالأعمدة
+        # بتتصاف فوق بعض صح - بدل الشكل القديم اللي كان بيخلي الهيدر يلزق
+        # بحافة يمين list_outer الواسعة (fill="x") بينما الصفوف بتتصاف
+        # لحافة يمين الـ inner الأضيق (بعرض مجموع الأعمدة بس)، فبيحصل فرق
+        # (drift) بينهم بمقدار الفراغ الغير مستخدم على يسار الـ inner.
+        TOTAL_COL_WIDTH = sum(COL_WIDTHS.values())
+        header_row = tk.Frame(header, width=TOTAL_COL_WIDTH, height=30, bg=PALETTE["card"])
+        header_row.pack_propagate(False)
+        header_row.pack(side="left")
         # ترتيب الأعمدة من اليمين لليسار (RTL): اسم الملف، المدة، الحالة،
         # شيك الصوت، شيك التفريغ - بنعبّي من side="right" بنفس الترتيب.
         for key, text in [
             ("filename", "اسم الملف"), ("duration", "المدة/الحجم"),
             ("status", "الحالة"), ("audio_cb", "🎙"), ("tr_cb", "📝"),
         ]:
-            cell = _make_cell(header, COL_WIDTHS[key], PALETTE["card"])
+            cell = _make_cell(header_row, COL_WIDTHS[key], PALETTE["card"])
             cell.pack(side="right")
             # أيقونات الهيدر (🎙/📝) بخط أكبر عشان تبان واضحة، مش نفس حجم
             # نص العناوين التانية اللي أصغر بطبيعتها
@@ -1739,6 +2001,15 @@ td, th {{ border: 1px solid #ccc; padding: 6px 10px; text-align: right; }}
             if not ask_yesno("تنبيه", "التسجيل لسه شغال. عايز تقفل فعلاً؟"):
                 return
             self.stop_flag.set()
+            # مهم: كل الثريدز daemon، يعني لو قفلنا النافذة على طول من غير
+            # ما نستنى، ثريد الكتابة/الضغط بيتقتل فجأة نص الشغل وممكن يبوظ
+            # آخر جزء صوتي. بدل ما نقفل على طول، بنستنى الثريد يخلص فعلياً
+            # (يقفل الملف ويضغطه) قبل ما نعمل destroy.
+            self.record_btn.config(state="disabled")
+            self.status_label.config(text="⏳ بيقفل ويحفظ آخر جزء قبل الإغلاق...", foreground=PALETTE["warning"])
+            self._log("جاري حفظ آخر جزء تسجيل قبل إغلاق البرنامج، من فضلك استنى...")
+            self._wait_write_thread_then_close()
+            return
         elif self._processing:
             if not ask_yesno(
                 "تنبيه",
@@ -1747,6 +2018,17 @@ td, th {{ border: 1px solid #ccc; padding: 6px 10px; text-align: right; }}
             ):
                 return
         self.root.destroy()
+
+    def _wait_write_thread_then_close(self, waited_ms: int = 0):
+        """بيستنى ثريد الكتابة (اللي بيقفل الملف الحالي ويضغطه) يخلص فعلياً
+        قبل إغلاق النافذة، بدل قفل فوري ممكن يقطع الكتابة نص الطريق.
+        فيه حد أقصى للانتظار (30 ثانية) كـ fallback احتياطي بس، عشان
+        البرنامج ميفضلش عالق لو حصل عطل غريب في الثريد نفسه."""
+        thread_done = self._write_thread is None or not self._write_thread.is_alive()
+        if thread_done or waited_ms >= 30000:
+            self.root.destroy()
+            return
+        self.root.after(200, self._wait_write_thread_then_close, waited_ms + 200)
 
 
 def main():
