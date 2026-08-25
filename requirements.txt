@@ -8,3 +8,4 @@ markdown
 tkinterweb
 matplotlib
 google-genai
+groq
