@@ -8,11 +8,11 @@ Teams كذا ساعة) - مفيش داعي تختار نوع الجلسة، ال
 """
 
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
 
 import numpy as np
 import soundcard as sc
@@ -25,6 +25,19 @@ from state_manager import RECORD_FOLDER, pick_lecture_name, compress_to_opus, ff
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30  # كل نص ساعة يتقفل الملف الحالي ويتفتح ملف جديد أوتوماتيك
+
+_PART_NUM_RE = re.compile(r"__Part (\d+)\.", re.IGNORECASE)
+
+
+def _next_part_number(lecture: str) -> int:
+    highest = 0
+    for ext in ("opus", "flac", "wav"):
+        for p in RECORD_FOLDER.glob(f"{lecture}__Part *.{ext}"):
+            m = _PART_NUM_RE.search(p.name)
+            if m:
+                highest = max(highest, int(m.group(1)))
+    return highest + 1
+
 
 audio_queue: "queue.Queue[np.ndarray]" = queue.Queue()
 stop_flag = threading.Event()
@@ -58,10 +71,13 @@ def record_worker(lecture: str):
     ضغطه في الخلفية) ويفتح ملف جديد تلقائياً، لحد ما يوصله stop_flag.
     """
     chunk_frames_limit = SAMPLE_RATE * 60 * CHUNK_MINUTES
+    next_part = _next_part_number(lecture)
 
     def new_path():
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return RECORD_FOLDER / f"{lecture}__{ts}.flac"
+        nonlocal next_part
+        n = next_part
+        next_part += 1
+        return RECORD_FOLDER / f"{lecture}__Part {n:02d}.flac"
 
     current_path = new_path()
     frames_written = 0
