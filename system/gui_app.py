@@ -70,6 +70,24 @@ SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30
 LONG_RECORDING_REMINDER_MINUTES = 120  # تنبيه (مش إيقاف) كل ساعتين تسجيل مستمر
 
+_PART_NUM_RE = re.compile(r"__Part (\d+)\.", re.IGNORECASE)
+
+
+def _next_part_number(lecture: str) -> int:
+    """
+    بيدوّر على أعلى رقم "Part N" موجود بالفعل لملفات المحاضرة دي (بأي
+    صيغة: flac/opus/wav) ويرجع الرقم اللي بعده، عشان الترقيم يكمل تسلسلي
+    حتى لو المستخدم قفل البرنامج وسجل تاني بعدين.
+    """
+    highest = 0
+    for ext in ("opus", "flac", "wav"):
+        for p in RECORD_FOLDER.glob(f"{lecture}__Part *.{ext}"):
+            m = _PART_NUM_RE.search(p.name)
+            if m:
+                highest = max(highest, int(m.group(1)))
+    return highest + 1
+
+
 STATUS_LABELS = {
     "recorded": "متسجل بس",
     "transcribed": "متفرّغ",
@@ -308,9 +326,11 @@ def _get_default_app_name(ext: str = ".md") -> str:
 
 
 class StudyApp:
+    APP_NAME = "StudyNotes"
+
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title(f"مسجّل ومفرّغ محاضرات وجلسات — v{APP_VERSION}")
+        self._update_title()
         self.root.geometry("980x800")
         self.root.minsize(860, 660)
         # لو الشاشة نفسها أقصر من الحجم المطلوب، نقلّل ارتفاع النافذة
@@ -328,6 +348,7 @@ class StudyApp:
         self.chunk_vars = {}
 
         self._recording_start_time = None
+        self._active_recording_path = None  # مسار الملف اللي بيتكتب فيه دلوقتي فعليًا (مستبعد من قايمة الأجزاء لحد ما يتقفل)
         self._pause_started_at = None  # وقت بدء الاستراحة الحالية، لو فيه
         self._elapsed_timer_job = None
         self._last_long_reminder_minutes = 0
@@ -1027,6 +1048,12 @@ class StudyApp:
 
         state = load_state(lecture)
         chunks = list_lecture_chunks(lecture, state)
+        # الملف اللي بيتسجل فيه دلوقتي فعليًا (لسه مفتوح) مستبعد تمامًا من
+        # القايمة - مش نعرضه كـ"تالف"، لأنه أصلاً لسه ملقفلش ومفيش داعي
+        # يظهر خالص لحد ما يتقفل ويتم تسجيله بشكل نهائي.
+        active_path = getattr(self, "_active_recording_path", None)
+        if active_path is not None:
+            chunks = [c for c in chunks if c["path"] != active_path]
 
         if not chunks:
             ttk.Label(
@@ -1120,6 +1147,21 @@ class StudyApp:
     def _get_selected_paths(self):
         return [path for var, path, *_ in self.chunk_vars.values() if var.get()]
 
+    # ---------------------------------------------------------- Title / status badge
+    def _update_title(self):
+        """
+        بيحدّث عنوان النافذة (اللي بيبان في شريط العنوان وفي الـ taskbar
+        preview) عشان يعكس حالة التسجيل فورًا - نقطة حمراء ● وقت التسجيل
+        الفعلي، وأيقونة ⏸ وقت الإيقاف المؤقت، من غير أي بادج. ده أبسط حل
+        متوافق 100% مع ويندوز (تغيير أيقونة الـ exe نفسها وقت التشغيل مش
+        مدعوم مباشرة من tkinter/ويندوز من غير مكتبات خارجية إضافية).
+        """
+        if getattr(self, "recording", False):
+            status = "⏸ Paused" if getattr(self, "paused", False) else "🔴 Recording"
+            self.root.title(f"{self.APP_NAME} — {status}")
+        else:
+            self.root.title(self.APP_NAME)
+
     # ---------------------------------------------------------- Recording
     def _toggle_recording(self):
         if not self.recording:
@@ -1153,6 +1195,7 @@ class StudyApp:
         self.stop_flag.clear()
         self.recording = True
         self.paused = False
+        self._update_title()
         self.record_btn.config(text="⏹️  إيقاف التسجيل", bg=PALETTE["neutral_bg"])
         self.record_btn._normal_bg = PALETTE["neutral_bg"]
         self.status_label.config(text="🔴 بيسجّل الآن...", foreground=PALETTE["danger"])
@@ -1174,6 +1217,7 @@ class StudyApp:
         self.recording = False
         self.paused = False
         self._pause_started_at = None
+        self._update_title()
         self.record_btn.config(text="▶️  ابدأ التسجيل", bg=PALETTE["danger"])
         self.record_btn._normal_bg = PALETTE["danger"]
         self.status_label.config(text="⏳ بيقفل ويضغط آخر جزء...", foreground=PALETTE["warning"])
@@ -1187,6 +1231,7 @@ class StudyApp:
         if not self.recording:
             return
         self.paused = not self.paused
+        self._update_title()
         if self.paused:
             self._pause_started_at = time.monotonic()
             self.pause_btn.config(text="▶️ استكمال")
@@ -1344,11 +1389,22 @@ class StudyApp:
     def _write_loop(self, lecture: str):
         chunk_frames_limit = SAMPLE_RATE * 60 * CHUNK_MINUTES
 
+        # رقم الجزء (Part N) بيتحسب من أعلى رقم موجود بالفعل لنفس المحاضرة
+        # + 1 (مش من الصفر)، عشان لو المستخدم وقف وسجل تاني بعدين، الترقيم
+        # يكمل تسلسلي وميبوظش أو يتكرر مع أجزاء قديمة.
+        next_part = _next_part_number(lecture)
+
         def new_path():
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            return RECORD_FOLDER / f"{lecture}__{ts}.flac"
+            nonlocal next_part
+            n = next_part
+            next_part += 1
+            return RECORD_FOLDER / f"{lecture}__Part {n:02d}.flac"
 
         current_path = new_path()
+        # الملف ده لسه مفتوح وبيتكتب فيه دلوقتي - لازم نستثنيه من قايمة
+        # الأجزاء في الواجهة، وإلا sf.info() هيقرا header غير مكتمل ويظهره
+        # غلط كـ"ملف تالف" لحد ما يتقفل فعليًا.
+        self._active_recording_path = current_path
         frames_written = 0
         self._log_threadsafe(f"التسجيل هيتحفظ في: {current_path.name}")
 
@@ -1367,6 +1423,7 @@ class StudyApp:
                     f.close()
                     threading.Thread(target=self._compress_chunk_background, args=(current_path,), daemon=True).start()
                     current_path = new_path()
+                    self._active_recording_path = current_path
                     frames_written = 0
                     self._log_threadsafe(f"جزء جديد بدأ (بعد {CHUNK_MINUTES} min): {current_path.name}")
                     f = sf.SoundFile(str(current_path), mode="w", samplerate=SAMPLE_RATE, channels=1, format="FLAC")
@@ -1381,6 +1438,7 @@ class StudyApp:
                 f.close()
             except Exception:
                 pass
+            self._active_recording_path = None
             self._compress_chunk_background(current_path)
 
     # ---------------------------------------------------------- Process
@@ -1573,24 +1631,34 @@ class StudyApp:
 
         win = tk.Toplevel(self.root)
         win.title("مسح بيانات المحاضرة")
-        win.configure(bg=PALETTE["card"])
+        win.configure(bg=PALETTE["bg"])
         win.resizable(False, False)
         win.transient(self.root)
         win.grab_set()
-        win.geometry("780x580")
+        win.geometry("780x620")
+
+        header = tk.Frame(win, bg=PALETTE["danger"], width=780)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=64)
+        tk.Label(
+            header, text="🗑  مسح بيانات المحاضرة", bg=PALETTE["danger"], fg="white",
+            font=("Segoe UI", 14, "bold"), anchor="e",
+        ).pack(side="right", padx=20, pady=14)
 
         ttk.Label(
             win, text=f"اختار بالظبط أي ريكورد وأي تفريغ عايز تمسحه من «{lecture}»:",
-            background=PALETTE["card"], foreground=PALETTE["text"],
+            background=PALETTE["bg"], foreground=PALETTE["text"],
             font=("Segoe UI", 10, "bold"), justify="right", wraplength=720,
         ).pack(anchor="e", padx=16, pady=(16, 4))
 
         ttk.Label(
             win,
-            text="🎙 = ملف الصوت الخام لهذا الجزء   |   📝 = التفريغ بتاعه بس "
+            text="🎙 = ملف الصوت الخام لهذا الجزء\n"
+                 "📝 = التفريغ بتاعه بس "
                  "(متاح للأجزاء المتفرّغة اللي لسه مش متشرّحة فقط، لأن اللي "
                  "اتشرح بالفعل بُنيت النوتس عليه)",
-            background=PALETTE["card"], foreground=PALETTE["text_muted"],
+            background=PALETTE["bg"], foreground=PALETTE["text_muted"],
             font=("Segoe UI", 8), justify="right", wraplength=720,
         ).pack(anchor="e", padx=16, pady=(0, 8))
 
@@ -1728,7 +1796,7 @@ class StudyApp:
 
         ttk.Label(
             win, text="⚠ المسح نهائي ومش هترجع فيه.",
-            background=PALETTE["card"], foreground=PALETTE["danger"],
+            background=PALETTE["bg"], foreground=PALETTE["danger"],
             font=("Segoe UI", 9, "bold"),
         ).pack(anchor="e", padx=16, pady=(10, 10))
 
@@ -1784,20 +1852,29 @@ class StudyApp:
         ويغلط في حرف - المطابقة نص بنص فحرف زيادة/ناقص كفاية إنها ترفض."""
         win = tk.Toplevel(self.root)
         win.title("تأكيد نهائي")
-        win.configure(bg=PALETTE["card"])
+        win.configure(bg=PALETTE["bg"])
         win.resizable(False, False)
         win.transient(self.root)
         win.grab_set()
-        win.geometry("440x260")
+        win.geometry("440x300")
+
+        header = tk.Frame(win, bg=PALETTE["danger"], width=440)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=56)
+        tk.Label(
+            header, text="⚠  تأكيد نهائي", bg=PALETTE["danger"], fg="white",
+            font=("Segoe UI", 13, "bold"), anchor="e",
+        ).pack(side="right", padx=20, pady=12)
 
         ttk.Label(
-            win, text=message, background=PALETTE["card"], foreground=PALETTE["danger"],
+            win, text=message, background=PALETTE["bg"], foreground=PALETTE["danger"],
             font=("Segoe UI", 10, "bold"), justify="right", wraplength=400,
         ).pack(anchor="e", padx=16, pady=(16, 10))
 
         ttk.Label(
             win, text="اكتب اسم المحاضرة بالظبط عشان تأكد:",
-            background=PALETTE["card"], foreground=PALETTE["text"],
+            background=PALETTE["bg"], foreground=PALETTE["text"],
             justify="right", wraplength=400,
         ).pack(anchor="e", padx=16)
 
@@ -1817,7 +1894,7 @@ class StudyApp:
         _add_tooltip(btn_copy_name, "نسخ اسم المحاضرة بالظبط للـ clipboard عشان تلصقه (Ctrl+V) في الخانة تحت")
 
         name_label = ttk.Label(
-            row_name, text=f"«{lecture}»", background=PALETTE["card"],
+            row_name, text=f"«{lecture}»", background=PALETTE["bg"],
             foreground=PALETTE["accent_dark"], font=("Segoe UI", 9, "bold"),
             justify="right",
         )
@@ -1904,6 +1981,16 @@ class StudyApp:
         win = tk.Toplevel(self.root)
         win.title(f"نوتس: {lecture}")
         win.geometry("820x680")
+        win.configure(bg=PALETTE["bg"])
+
+        header = tk.Frame(win, bg=PALETTE["accent"], width=820)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=52)
+        tk.Label(
+            header, text=f"📄  نوتس: {lecture}", bg=PALETTE["accent"], fg="white",
+            font=("Segoe UI", 12, "bold"), anchor="e",
+        ).pack(side="right", padx=20, pady=10)
 
         toolbar = ttk.Frame(win, style="TFrame")
         toolbar.pack(fill="x", padx=8, pady=(6, 0))
