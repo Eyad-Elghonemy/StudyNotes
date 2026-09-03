@@ -28,7 +28,7 @@ import threading
 import time
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, scrolledtext, simpledialog, ttk
+from tkinter import messagebox, scrolledtext, ttk
 
 import numpy as np
 import soundcard as sc
@@ -38,6 +38,7 @@ from dotenv import load_dotenv
 import arabic_reshaper
 from bidi.algorithm import get_display
 import markdown as md_lib
+from pygments.formatters import HtmlFormatter
 from tkinterweb import HtmlFrame
 
 from math_render import render_math_to_html_images
@@ -64,7 +65,7 @@ from state_manager import (
 )
 import process_lecture
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30
@@ -142,6 +143,8 @@ HIGHLIGHT_STYLES = {
     "🔁": ("hl-summary", "#f2f2f2", "#6b6f7d"),      # خلاصة
     "🧩": ("hl-example", "#fff1e6", "#d4772c"),      # مثال محلول
     "🕒": ("hl-deadline", "#fdecec", "#b03a2e"),     # ميعاد/امتحان
+    "🔧": ("hl-correction", "#fdf1e3", "#e67e22"),   # تصحيح (اختياري)
+    "💬": ("hl-addition", "#e8f8f5", "#16a085"),     # إضافة من المدوّن (اختياري)
 }
 
 
@@ -400,15 +403,22 @@ class StudyApp:
                 "مش هيشتغل صح لحد ما يبقى فيه جهاز صوت متوصل ومفعّل.",
             )
 
-    def _on_first_run_setup_done(self, gemini_saved, groq_saved, gemini_rejected, groq_rejected):
+    def _on_first_run_setup_done(
+        self, gemini_saved, groq_saved, gemini_rejected, groq_rejected,
+        nvidia_saved=False, nvidia_rejected=False,
+    ):
         self._refresh_api_status_label()
-        saved = [n for n, ok in (("Gemini", gemini_saved), ("Groq", groq_saved)) if ok]
+        saved = [n for n, ok in (
+            ("Gemini", gemini_saved), ("Groq", groq_saved), ("NVIDIA", nvidia_saved),
+        ) if ok]
         if saved:
             self._log(f"✓ تم حفظ مفتاح/مفاتيح API بنجاح: {'، '.join(saved)}")
         if gemini_rejected:
             self._log("⚠ مفتاح Gemini اللي دخلته مش صالح - اتجاهل. تقدر تضيفه لاحقًا في ملف .env يدويًا.")
         if groq_rejected:
             self._log("⚠ مفتاح Groq اللي دخلته مش صالح - اتجاهل. تقدر تضيفه لاحقًا في ملف .env يدويًا.")
+        if nvidia_rejected:
+            self._log("⚠ مفتاح NVIDIA اللي دخلته مش صالح - اتجاهل. تقدر تضيفه لاحقًا في ملف .env يدويًا.")
         # نكمّل باقي فحوصات أول تشغيل (ffmpeg / جهاز الصوت) بعد ما نافذة
         # المفاتيح تقفل
         self.root.after(100, self._startup_checks)
@@ -416,10 +426,16 @@ class StudyApp:
     def _refresh_api_status_label(self):
         gemini_ok = bool(process_lecture.GEMINI_API_KEY.strip())
         groq_ok = bool(process_lecture.GROQ_API_KEY.strip())
+        nvidia_ok = bool(process_lecture.NVIDIA_API_KEY.strip())
         gemini_text = f"Gemini {'✓' if gemini_ok else '✗'}"
         groq_text = f"Groq {'✓' if groq_ok else '✗'}"
+        parts = [gemini_text, groq_text]
+        if nvidia_ok:
+            # NVIDIA اختياري بالكامل - بيبان بس لو فعلاً متسجل، عشان منزحمش
+            # الشريط بمفتاح تالت "✗" لكل يوزر مش مهتم بيه.
+            parts.append("NVIDIA ✓")
         color = PALETTE["success"] if (gemini_ok or groq_ok) else PALETTE["danger"]
-        self.api_status_label.config(text=f"🔑 {gemini_text}  |  {groq_text}", foreground=color)
+        self.api_status_label.config(text=f"🔑 {'  |  '.join(parts)}", foreground=color)
 
     # ---------------------------------------------------------- Style
     def _setup_style(self):
@@ -534,38 +550,52 @@ class StudyApp:
         frame_top = ttk.LabelFrame(self.root, text="🎓 المحاضرة / الجلسة", style="Card.TLabelframe")
         frame_top.pack(fill="x", padx=12, pady=(10, 5))
 
+        # الصف ده كان فيه 5 عناصر مكدّسة جنب بعض في سطر واحد (قايمة
+        # المحاضرات + زرار جديدة + badge الـ pending + حالة المفاتيح +
+        # زرار الموديلات)، ومجموع عرضهم الطبيعي بيعدّي 1100px بسهولة -
+        # أكبر من عرض الشاشة الافتراضي نفسه. النتيجة: العناصر كانت بتتقص
+        # أو تختفي حتى في الحجم الافتراضي، مش بس لما الشاشة تتصغّر. الحل:
+        # نقسّم لصفين - صف علوي لعناصر الجلسة (قايمة المحاضرات + جديدة)،
+        # وصف تاني لحالة المفاتيح وزرار الموديلات - كل صف بمفرده بقى
+        # محتاج مساحة أقل بكتير وثابت حتى مع تصغير الشاشة.
+        top_row1 = ttk.Frame(frame_top, style="Card.TFrame")
+        top_row1.pack(fill="x", padx=10, pady=(10, 4))
+
+        top_row2 = ttk.Frame(frame_top, style="Card.TFrame")
+        top_row2.pack(fill="x", padx=10, pady=(0, 10))
+
         self.lecture_var = tk.StringVar()
         self.lecture_combo = ttk.Combobox(
-            frame_top, textvariable=self.lecture_var, state="readonly", width=42,
+            top_row1, textvariable=self.lecture_var, state="readonly", width=42,
             justify="right",
         )
-        self.lecture_combo.pack(side="right", padx=10, pady=10)
+        self.lecture_combo.pack(side="right")
         self.lecture_combo.bind("<<ComboboxSelected>>", lambda e: self._on_lecture_change())
 
         new_lecture_btn = self._outline_button(
-            frame_top, "➕ جديدة", self._new_lecture_dialog, PALETTE["accent"],
+            top_row1, "➕ جديدة", self._new_lecture_dialog, PALETTE["accent"],
         )
         new_lecture_btn.pack(side="right", padx=10)
         _add_tooltip(new_lecture_btn, "إنشاء محاضرة/جلسة جديدة بالاسم")
 
-        self.pending_badge = ttk.Label(frame_top, text="", style="Badge.TLabel", background=PALETTE["card"])
-        self.pending_badge.pack(side="right", padx=12)
+        self.pending_badge = ttk.Label(top_row1, text="", style="Badge.TLabel", background=PALETTE["card"])
+        self.pending_badge.pack(side="left", padx=2)
 
         # حالة مفاتيح الـ API الحالية - عشان المستخدم يعرف من أول نظرة لو
         # في مزوّد ناقص، بدل ما يكتشف بس وقت فشل عملية تفريغ/تلخيص
         self.api_status_label = ttk.Label(
-            frame_top, text="", background=PALETTE["card"], font=("Segoe UI", 9, "bold"),
+            top_row2, text="", background=PALETTE["card"], font=("Segoe UI", 9, "bold"),
         )
-        self.api_status_label.pack(side="left", padx=12)
-        _add_tooltip(self.api_status_label, "حالة مفاتيح Gemini/Groq الحالية من ملف .env")
+        self.api_status_label.pack(side="left")
+        _add_tooltip(self.api_status_label, "حالة مفاتيح Gemini/Groq/NVIDIA الحالية من ملف .env")
 
         settings_btn = self._card_button(
-            frame_top, "⚙ الموديلات", self._show_model_settings_dialog,
+            top_row2, "⚙ الموديلات", self._show_model_settings_dialog,
             PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
             font=("Segoe UI", 9, "bold"), padx=10, pady=5,
         )
-        settings_btn.pack(side="left", padx=(0, 4))
-        _add_tooltip(settings_btn, "اختيار موديل التفريغ وموديل التلخيص/النوتس يدويًا")
+        settings_btn.pack(side="left", padx=(10, 0))
+        _add_tooltip(settings_btn, "Manually choose the transcription model and the summarization/notes model.")
 
         # ---------- التحكم في التسجيل ----------
         frame_controls = ttk.LabelFrame(self.root, text="⏺ التسجيل", style="Card.TLabelframe")
@@ -674,7 +704,8 @@ class StudyApp:
         self.btn_primary_lecture.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         _add_tooltip(
             self.btn_primary_lecture,
-            "تفريغ الأجزاء المحددة، وتحويلها لنوتس بأسلوب شرح تعليمي منظم (عناوين، تفصيل، صناديق تمييز كاملة)",
+            "Transcribe the selected chunks and turn them into organized lecture-style notes "
+            "(headings, detail, full highlight boxes).",
         )
 
         self.btn_primary_meeting = self._card_button(
@@ -686,7 +717,8 @@ class StudyApp:
         self.btn_primary_meeting.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         _add_tooltip(
             self.btn_primary_meeting,
-            "تفريغ الأجزاء المحددة، وتحويلها لمحضر اجتماع مختصر (ملخص، قرارات، مهام، مواعيد) بدل شرح تعليمي مطوّل",
+            "Transcribe the selected chunks and turn them into a short meeting summary "
+            "(recap, decisions, action items, dates) instead of a detailed lecture explanation.",
         )
 
         # صف ثانوي: أفعال معالجة بديلة أقل استخداماً (تفريغ لوحده / نوتس
@@ -707,7 +739,7 @@ class StudyApp:
             relief="ridge", bd=2, padx=8, pady=6,
         )
         btn_transcribe.grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        _add_tooltip(btn_transcribe, "تفريغ الأجزاء المحددة لنص خام فقط، من غير تحويل لنوتس")
+        _add_tooltip(btn_transcribe, "Transcribe the selected chunks to raw text only, without generating notes.")
 
         btn_notes_only = self._card_button(
             row_secondary, "🎓  لخص فقط",
@@ -717,7 +749,7 @@ class StudyApp:
             relief="ridge", bd=2, padx=8, pady=6,
         )
         btn_notes_only.grid(row=0, column=1, sticky="ew", padx=3)
-        _add_tooltip(btn_notes_only, "تحويل النص المفرّغ الموجود بالفعل لنوتس بأسلوب شرح تعليمي، من غير تفريغ صوت جديد")
+        _add_tooltip(btn_notes_only, "Turn the existing transcript into lecture-style notes, without transcribing new audio.")
 
         btn_notes_only_meeting = self._card_button(
             row_secondary, "🤝  حوّل لنوتس بس",
@@ -727,7 +759,7 @@ class StudyApp:
             relief="ridge", bd=2, padx=8, pady=6,
         )
         btn_notes_only_meeting.grid(row=0, column=2, sticky="ew", padx=(3, 0))
-        _add_tooltip(btn_notes_only_meeting, "تحويل النص المفرّغ الموجود بالفعل لمحضر اجتماع مختصر، من غير تفريغ صوت جديد")
+        _add_tooltip(btn_notes_only_meeting, "Turn the existing transcript into a short meeting summary, without transcribing new audio.")
 
         # صف عرض النتيجة (Tier 3): أهم من زراير المسح/التراجع تحته، بس
         # أقل من زراير المعالجة فوقه - ألوان أهدأ برضه (soft) للتفرقة.
@@ -737,20 +769,28 @@ class StudyApp:
         row_view_notes.pack(fill="x", padx=10, pady=(2, 4))
         row_view_notes.columnconfigure(0, weight=1)
         row_view_notes.columnconfigure(1, weight=1)
+        row_view_notes.columnconfigure(2, weight=1)
 
         btn_view_notes = self._card_button(
             row_view_notes, "📄  عرض النوتس هنا", self._show_notes_viewer,
             PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
         )
-        btn_view_notes.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        _add_tooltip(btn_view_notes, "فتح نافذة معاينة للنوتس (مع المعادلات) جوه البرنامج نفسه")
+        btn_view_notes.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        _add_tooltip(btn_view_notes, "Open a preview window for the notes (with equations rendered) inside the app.")
+
+        btn_view_transcript = self._card_button(
+            row_view_notes, "📃  عرض التفريغ هنا", self._show_transcript_viewer,
+            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
+        )
+        btn_view_transcript.grid(row=0, column=1, sticky="ew", padx=3)
+        _add_tooltip(btn_view_transcript, "Open a preview window for the raw transcript text, with a one-click copy button.")
 
         btn_open_md = self._card_button(
             row_view_notes, f"📂  افتح في {default_app_name}", self._open_markdown_file,
             PALETTE["info_soft"], PALETTE["info_soft_dark"],
         )
-        btn_open_md.grid(row=0, column=1, sticky="ew", padx=(4, 0))
-        _add_tooltip(btn_open_md, f"فتح ملف الـ Markdown بالبرنامج الافتراضي على جهازك ({default_app_name})")
+        btn_open_md.grid(row=0, column=2, sticky="ew", padx=(3, 0))
+        _add_tooltip(btn_open_md, f"Open the Markdown file with your system's default app ({default_app_name}).")
 
         # صف المسح والتراجع: زرار المسح الانتقائي على الشمال، وزرار
         # التراجع عن آخر تحديث اتنقل لليمين.
@@ -770,7 +810,7 @@ class StudyApp:
         btn_delete.pack(side="left")
         btn_delete.bind("<Enter>", lambda e: btn_delete.config(bg="#f8d7da"))
         btn_delete.bind("<Leave>", lambda e: btn_delete.config(bg="#fdecea"))
-        _add_tooltip(btn_delete, "مسح انتقائي لملفات المحاضرة (صوت التسجيل/التفريغ/النوتس) - المسح نهائي")
+        _add_tooltip(btn_delete, "Selectively delete lecture files (recording audio / transcript / notes) — this is permanent.")
 
         btn_undo = tk.Button(
             row_undo,
@@ -785,7 +825,7 @@ class StudyApp:
         btn_undo.pack(side="right")
         btn_undo.bind("<Enter>", lambda e: btn_undo.config(bg="#ffe4b5"))
         btn_undo.bind("<Leave>", lambda e: btn_undo.config(bg=PALETTE["warning_bg"]))
-        _add_tooltip(btn_undo, "تراجع عن آخر تحديث: إلغاء آخر قسم نوتس اتضاف، ورجوع الأجزاء المرتبطة به لحالة \"متفرّغ\"")
+        _add_tooltip(btn_undo, "Undo the last update: remove the last notes section added, and set its related chunks back to \"transcribed\".")
 
         row_progress = ttk.Frame(frame_process, style="Card.TFrame")
         row_progress.pack(fill="x", padx=10, pady=(2, 6))
@@ -820,7 +860,7 @@ class StudyApp:
         _add_tooltip(btn_copy_log, "نسخ سجل الأحداث كامل (كنص سليم) للـ clipboard")
 
         self.log_box = scrolledtext.ScrolledText(
-            frame_log, height=6, state="disabled", wrap="word",
+            frame_log, height=8, state="disabled", wrap="word",
             font=("Segoe UI", 10), bg=PALETTE["card"], fg=PALETTE["text"],
             relief="flat", padx=8, pady=6,
         )
@@ -895,12 +935,18 @@ class StudyApp:
 
     # ---------------------------------------------------------- Model settings
     def _show_model_settings_dialog(self):
+        import first_run_setup
         win = tk.Toplevel(self.root)
         win.title("Model Settings")
         win.configure(bg=PALETTE["bg"])
         win.resizable(False, False)
         win.transient(self.root)
         win.grab_set()
+        # مرجع للنافذة دي عشان لو محتاجين نفك قفلها (grab) مؤقتًا وقت ما
+        # نافذة تانية (زي "محتاج مفتاح") تتفتح فوقها - انظر
+        # _prompt_for_missing_key_blocking لتفاصيل السبب.
+        self._model_settings_win = win
+        win.protocol("WM_DELETE_WINDOW", lambda: (setattr(self, "_model_settings_win", None), win.destroy()))
 
         WIDTH = 460
 
@@ -925,7 +971,15 @@ class StudyApp:
             font=("Segoe UI", 9), justify="left", wraplength=WIDTH - 40,
         ).pack(anchor="w", pady=(0, 14))
 
-        def _add_choice_card(icon, title, subtitle, accent_color, choices_dict, current_key, on_change):
+        def _provider_for_choice(choices_dict, key):
+            """بترجع اسم المزوّد ("gemini"/"groq"/"nvidia") من مفتاح
+            الاختيار، أو None لو الاختيار "auto" (مفيهوش مزوّد واحد محدد)."""
+            entry = choices_dict.get(key)
+            if not entry or entry[1] is None:
+                return None
+            return entry[1][0]
+
+        def _add_choice_card(icon, title, subtitle, accent_color, choices_dict, current_key, on_change, last_used_getter=None, default_auto_provider=None):
             card = tk.Frame(
                 body, bg=PALETTE["card"], highlightthickness=1,
                 highlightbackground=PALETTE["border"], highlightcolor=PALETTE["border"],
@@ -957,32 +1011,79 @@ class StudyApp:
 
             display_to_key = {v[0]: k for k, v in choices_dict.items()}
             var = tk.StringVar(value=choices_dict[current_key][0])
+
+            # صف اللوجو + الـ dropdown جنب بعض. اللوجو بيتغيّر تلقائي حسب
+            # المزوّد بتاع الاختيار الحالي (ولا بيظهر خالص لو الاختيار
+            # "Auto" - مفيش مزوّد واحد محدد نعرضله لوجو).
+            combo_row = tk.Frame(inner, bg=PALETTE["card"])
+            combo_row.pack(anchor="w", fill="x")
+
+            logo_label = tk.Label(combo_row, bg=PALETTE["card"])
+            logo_label.pack(side="left", padx=(0, 6))
+
+            def _refresh_logo(key):
+                provider = _provider_for_choice(choices_dict, key)
+                if provider is None:
+                    # "Auto" - مفيش مزوّد واحد ثابت مختار يدويًا. بنفضّل
+                    # نعرض لوجو آخر مزوّد نجح فعليًا في الجلسة الحالية
+                    # (last_used_getter) لو موجود، وإلا بنعرض لوجو أول
+                    # مزوّد في سلسلة الـ fallback الافتراضية
+                    # (default_auto_provider - Groq للتفريغ، Gemini
+                    # للتلخيص) عشان اللوجو يبان من غير ما يستنى أي تشغيل،
+                    # لأنه فعليًا ده اللي هيتجرب الأول.
+                    provider = (last_used_getter() if last_used_getter else None) or default_auto_provider
+                    if provider is None:
+                        logo_label.configure(image="", text="🔄", font=("Segoe UI", 11))
+                        logo_label.image = None
+                        return
+                photo = first_run_setup._load_logo(
+                    first_run_setup.PROVIDER_INFO.get(provider, {}).get("logo", ""), size=18,
+                )
+                if photo is None:
+                    logo_label.configure(image="", text="🔄", font=("Segoe UI", 11))
+                    logo_label.image = None
+                else:
+                    logo_label.configure(image=photo, text="")
+                    logo_label.image = photo  # مرجع يمنع الـ garbage collection
+
+            _refresh_logo(current_key)
+
             combo = ttk.Combobox(
-                inner, textvariable=var, values=list(display_to_key.keys()),
-                state="readonly", width=44, justify="left",
+                combo_row, textvariable=var, values=list(display_to_key.keys()),
+                state="readonly", width=40, justify="left",
                 style="Settings.TCombobox",
             )
-            combo.pack(anchor="w", fill="x")
-            combo.bind("<<ComboboxSelected>>", lambda e: on_change(display_to_key[var.get()]))
+            combo.pack(side="left", fill="x", expand=True)
+
+            def _on_select(event):
+                selected_key = display_to_key[var.get()]
+                _refresh_logo(selected_key)
+                on_change(selected_key)
+
+            combo.bind("<<ComboboxSelected>>", _on_select)
             return var
 
         style = ttk.Style(win)
         style.configure("Settings.TCombobox", padding=6)
 
-        _add_choice_card(
+        self._transcribe_model_var = _add_choice_card(
             "🎙", "Speech-to-Text Model", "Used to transcribe recorded audio into raw text.",
             PALETTE["info"],
             process_lecture.TRANSCRIBE_MODEL_CHOICES,
             process_lecture.TRANSCRIBE_MODEL_CHOICE,
             self._on_transcribe_model_changed,
+            last_used_getter=lambda: process_lecture.LAST_USED_TRANSCRIBE_PROVIDER,
+            default_auto_provider="groq",  # أول مزوّد في سلسلة fallback التفريغ الافتراضية
         )
 
-        _add_choice_card(
+        self._summary_model_var = _add_choice_card(
             "🧠", "Summarization / Notes Model", "Used to turn the transcript into organized notes.",
             PALETTE["success"],
             process_lecture.SUMMARY_MODEL_CHOICES,
             process_lecture.SUMMARY_MODEL_CHOICE,
             self._on_summary_model_changed,
+            last_used_getter=lambda: process_lecture.LAST_USED_SUMMARY_PROVIDER,
+            default_auto_provider="gemini",  # أول مزوّد في سلسلة fallback التلخيص الافتراضية
         )
 
         tk.Label(
@@ -994,21 +1095,111 @@ class StudyApp:
 
         footer = tk.Frame(win, bg=PALETTE["bg"])
         footer.pack(fill="x", padx=20, pady=(8, 18))
+
+        def _close_model_settings():
+            self._model_settings_win = None
+            win.destroy()
+
         close_btn = self._card_button(
-            footer, "Done", win.destroy, PALETTE["accent"], PALETTE["accent_dark"],
+            footer, "Done", _close_model_settings, PALETTE["accent"], PALETTE["accent_dark"],
         )
         close_btn.pack(side="right")
 
         win.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() - win.winfo_width()) // 2
-        y = self.root.winfo_y() + (self.root.winfo_height() - win.winfo_height()) // 2
-        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        w = win.winfo_reqwidth() + 4
+        h = win.winfo_reqheight() + 4
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        screen_w, screen_h = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = max(0, min(x, screen_w - w))
+        y = max(0, min(y, screen_h - h))
+        win.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _required_provider_for_choice(self, choice_key: str, choices_dict: dict):
+        """يرجع اسم المزوّد (provider) اللي الاختيار ده محتاجه، أو None
+        لو Auto (مش محتاج تحقق من مفتاح معيّن)."""
+        if choice_key == "auto":
+            return None
+        entry = choices_dict.get(choice_key)
+        if not entry or not entry[1]:
+            return None
+        return entry[1][0]
+
+    def _provider_key_configured(self, provider: str) -> bool:
+        return bool({
+            "gemini": process_lecture.GEMINI_API_KEY,
+            "groq": process_lecture.GROQ_API_KEY,
+            "nvidia": process_lecture.NVIDIA_API_KEY,
+        }.get(provider, "").strip())
+
+    def _prompt_for_missing_key_blocking(self, provider: str) -> bool:
+        """بتفتح نافذة توجيه المفتاح وتستنى (modal) لحد ما تتقفل، وترجع
+        True لو المستخدم حفظ مفتاح صالح، False لو لغى.
+
+        لو النافذة دي بتتفتح من جوه نافذة "Model Settings" (اللي ماسكة
+        قفل إدخال - grab - بالفعل)، لازم نفك القفل ده مؤقتًا الأول -
+        نافذتين بيحاولوا ياخدوا القفل الحصري في نفس الوقت بيلخبطوا
+        Tkinter ويخلوا النافذة التانية تتجمد نص رسم (تظهر جزء بس من
+        محتواها، زي ما لو الأزرار اختفت). بعد ما اليوزر يخلص، بنرجّع
+        القفل لنافذة Model Settings تاني لو لسه مفتوحة.
+        """
+        import first_run_setup
+
+        model_settings_win = getattr(self, "_model_settings_win", None)
+        had_grab = False
+        if model_settings_win is not None and model_settings_win.winfo_exists():
+            try:
+                model_settings_win.grab_release()
+                had_grab = True
+            except tk.TclError:
+                pass
+
+        result = {"saved": False}
+
+        def _on_done(saved):
+            result["saved"] = saved
+
+        # لو النافذة دي طالعة فوق Model Settings، خليها تتوسّط وتترتب
+        # (transient) بالنسبة لها هي، مش للنافذة الرئيسية اللي وراها -
+        # عشان الترتيب البصري يبقى منطقي (فوق النافذة اللي فتحتها فعليًا).
+        parent_win = model_settings_win if (model_settings_win is not None and model_settings_win.winfo_exists()) else self.root
+        dlg = first_run_setup.prompt_for_missing_key(parent_win, PALETTE, provider, on_done=_on_done)
+        if dlg is not None:
+            self.root.wait_window(dlg.win)
+
+        if had_grab and model_settings_win.winfo_exists():
+            try:
+                model_settings_win.grab_set()
+            except tk.TclError:
+                pass
+
+        return result["saved"]
 
     def _on_transcribe_model_changed(self, choice_key: str):
+        provider = self._required_provider_for_choice(choice_key, process_lecture.TRANSCRIBE_MODEL_CHOICES)
+        if provider and not self._provider_key_configured(provider):
+            saved = self._prompt_for_missing_key_blocking(provider)
+            if not saved:
+                # المستخدم لغى - نرجع الاختيار لـ Auto بدل ما يفضل عالق
+                # على موديل مش شغال، ونحدّث شكل الـ dropdown نفسه كمان.
+                choice_key = "auto"
+                if hasattr(self, "_transcribe_model_var"):
+                    self._transcribe_model_var.set(process_lecture.TRANSCRIBE_MODEL_CHOICES["auto"][0])
+                self._log("🎙 اتلغى - رجع موديل التفريغ لـ Auto.")
+
         process_lecture.set_transcribe_model_choice(choice_key)
         self._log(f"🎙 موديل التفريغ اتغيّر لـ: {process_lecture.TRANSCRIBE_MODEL_CHOICES[choice_key][0]}")
 
     def _on_summary_model_changed(self, choice_key: str):
+        provider = self._required_provider_for_choice(choice_key, process_lecture.SUMMARY_MODEL_CHOICES)
+        if provider and not self._provider_key_configured(provider):
+            saved = self._prompt_for_missing_key_blocking(provider)
+            if not saved:
+                choice_key = "auto"
+                if hasattr(self, "_summary_model_var"):
+                    self._summary_model_var.set(process_lecture.SUMMARY_MODEL_CHOICES["auto"][0])
+                self._log("🧠 اتلغى - رجع موديل التلخيص لـ Auto.")
+
         process_lecture.set_summary_model_choice(choice_key)
         self._log(f"🧠 موديل التلخيص اتغيّر لـ: {process_lecture.SUMMARY_MODEL_CHOICES[choice_key][0]}")
 
@@ -1026,14 +1217,168 @@ class StudyApp:
         self._refresh_chunks()
 
     def _new_lecture_dialog(self):
-        name = simpledialog.askstring("محاضرة/جلسة جديدة", "اسم المحاضرة أو الجلسة:")
-        if name:
+        win = tk.Toplevel(self.root)
+        win.title("محاضرة/جلسة جديدة")
+        win.configure(bg=PALETTE["bg"])
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+
+        WIDTH = 420
+        header = tk.Frame(win, bg=PALETTE["accent"], width=WIDTH)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=52)
+        tk.Label(
+            header, text="➕  محاضرة/جلسة جديدة", bg=PALETTE["accent"], fg="white",
+            font=("Segoe UI", 13, "bold"), anchor="e", justify="right",
+        ).pack(fill="x", padx=20, pady=13)
+
+        body = tk.Frame(win, bg=PALETTE["bg"])
+        body.pack(fill="both", expand=True, padx=20, pady=(16, 8))
+
+        ttk.Label(
+            body, text="اسم المحاضرة أو الجلسة:", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="e")
+        name_var = tk.StringVar()
+        name_entry = ttk.Entry(body, textvariable=name_var, width=40, justify="right")
+        name_entry.pack(anchor="e", fill="x", pady=(4, 14))
+        name_entry.focus_set()
+
+        ttk.Label(
+            body, text="مجال المحاضرة (اختياري):", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="e")
+        ttk.Label(
+            body,
+            text="بيساعد في تخصيص أسلوب وقواعد التلخيص لطبيعة مادتك تحديدًا "
+                 "(مصطلحات، دقة الأرقام، صيغة المعادلات...إلخ).",
+            background=PALETTE["bg"], foreground=PALETTE["text_muted"],
+            font=("Segoe UI", 8), justify="right", wraplength=WIDTH - 40,
+        ).pack(anchor="e", pady=(2, 6))
+
+        subject_options = [process_lecture.DEFAULT_SUBJECT_LABEL] + list(
+            process_lecture.SUBJECT_PROFILES.keys()
+        ) + ["أخرى..."]
+        subject_var = tk.StringVar(value=process_lecture.DEFAULT_SUBJECT_LABEL)
+        subject_combo = ttk.Combobox(
+            body, textvariable=subject_var, values=subject_options,
+            state="readonly", width=38, justify="right",
+        )
+        subject_combo.pack(anchor="e", fill="x")
+
+        other_var = tk.StringVar()
+        other_entry = ttk.Entry(body, textvariable=other_var, width=40, justify="right")
+
+        def _on_subject_changed(*_):
+            if subject_var.get() == "أخرى...":
+                other_entry.pack(anchor="e", fill="x", pady=(6, 0))
+            else:
+                other_entry.pack_forget()
+
+        subject_combo.bind("<<ComboboxSelected>>", _on_subject_changed)
+
+        ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(14, 10))
+
+        ttk.Label(
+            body, text="خيارات إضافية للنوتس (اختياري):", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="e")
+        ttk.Label(
+            body,
+            text="بتتفعّل بس لو حبيت، ونادرًا ما بتظهر حتى لو مفعّلة - أغلب "
+                 "المحاضرات مش هتحتاجهم، وده طبيعي 100%.",
+            background=PALETTE["bg"], foreground=PALETTE["text_muted"],
+            font=("Segoe UI", 8), justify="right", wraplength=WIDTH - 40,
+        ).pack(anchor="e", pady=(2, 8))
+
+        corrections_var = tk.BooleanVar(value=False)
+        additions_var = tk.BooleanVar(value=False)
+
+        def _build_option_row(var, icon, icon_color, text, tooltip):
+            # الإيموجي بيتحط في Label منفصل (مش جوه نص الـ Checkbutton
+            # نفسه) - Tkinter بيرندر إيموجي داخل نص الـ Checkbutton بشكل
+            # مكسور أحيانًا على ويندوز، لكن جوه Label عادي بيشتغل تمام.
+            row = tk.Frame(body, bg=PALETTE["bg"])
+            row.pack(fill="x", anchor="e", pady=(0, 6))
+            check = tk.Checkbutton(
+                row, variable=var, bg=PALETTE["bg"], activebackground=PALETTE["bg"],
+                selectcolor=PALETTE["card"], cursor="hand2",
+            )
+            check.pack(side="right")
+            icon_label = tk.Label(row, text=icon, bg=PALETTE["bg"], fg=icon_color, font=("Segoe UI", 12))
+            icon_label.pack(side="right", padx=(0, 4))
+            text_label = tk.Label(
+                row, text=text, bg=PALETTE["bg"], fg=PALETTE["text"],
+                font=("Segoe UI", 9), justify="right", anchor="e", wraplength=WIDTH - 80,
+            )
+            text_label.pack(side="right", fill="x", expand=True)
+            for w in (check, icon_label, text_label):
+                _add_tooltip(w, tooltip)
+
+        _build_option_row(
+            corrections_var, "🔧", "#e67e22",
+            "صحّح المعلومات الغلط بوضوح (لو المحاضر قال حاجة غلط فعلاً)",
+            "بيضيف صندوق 🔧 بس لو المحاضر قال معلومة غلط factually بشكل "
+            "مؤكد (رقم غلط، قانون علمي خطأ، تسمية غلط) - مش لمجرد رأي أو "
+            "تبسيط متعمد.",
+        )
+        _build_option_row(
+            additions_var, "💬", "#16a085",
+            "اسمح بإضافات بسيطة ومفيدة من معرفة عامة",
+            "بيضيف صندوق 💬 بس لو فيه معلومة قصيرة هتوضّح نقطة المحاضر "
+            "فعليًا - مش حشو أو تكرار لحاجة اتقالت بالفعل.",
+        )
+
+        footer = tk.Frame(win, bg=PALETTE["bg"])
+        footer.pack(fill="x", padx=20, pady=(14, 18))
+
+        def _create():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("تنبيه", "لازم تكتب اسم للمحاضرة/الجلسة.", parent=win)
+                return
+
+            chosen = subject_var.get()
+            if chosen == "أخرى...":
+                custom = other_var.get().strip()
+                subject = custom if custom else ""
+            elif chosen == process_lecture.DEFAULT_SUBJECT_LABEL:
+                subject = ""  # الافتراضي = فاضي، عشان يفضل زي السلوك القديم بالظبط
+            else:
+                subject = chosen
+
             clean = safe_name(name)
+            state = load_state(clean)
+            state["subject"] = subject
+            state["enable_corrections"] = corrections_var.get()
+            state["enable_additions"] = additions_var.get()
+            save_state(clean, state)
+
             values = list(self.lecture_combo["values"])
             if clean not in values:
                 self.lecture_combo["values"] = values + [clean]
             self.lecture_combo.set(clean)
             self._on_lecture_change()
+            win.destroy()
+
+        create_btn = self._card_button(
+            footer, "✓ إنشاء", _create, PALETTE["accent"], PALETTE["accent_dark"],
+        )
+        create_btn.pack(side="left")
+        self._outline_button(footer, "إلغاء", win.destroy, PALETTE["text_muted"]).pack(side="right")
+
+        name_entry.bind("<Return>", lambda e: _create())
+
+        win.update_idletasks()
+        w, h = win.winfo_reqwidth() + 4, win.winfo_reqheight() + 4
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        screen_w, screen_h = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = max(0, min(x, screen_w - w))
+        y = max(0, min(y, screen_h - h))
+        win.geometry(f"{w}x{h}+{x}+{y}")
 
     # ---------------------------------------------------------- Chunks panel
     def _refresh_chunks(self):
@@ -1146,6 +1491,20 @@ class StudyApp:
 
     def _get_selected_paths(self):
         return [path for var, path, *_ in self.chunk_vars.values() if var.get()]
+
+    def _end_chars_for_selection(self, state: dict, selected_paths: list):
+        """
+        بيرجع أقصى نهاية نطاق (offset) في ملف الترانسكريبت التراكمي بتاع
+        الأجزاء المحددة بس، عشان التلخيص يقف عند حدود التحديد بدل ما ياخد
+        كل النص الجديد المتراكم زيادة عن المطلوب (خصوصًا مهم لما فيه نص
+        قديم لسه مش متلخص من محاولات سابقة فشلت). لو مفيش تحديد أو مفيش
+        بيانات مدى، بيرجع None (يعني "خد لحد آخر النص" - السلوك الافتراضي).
+        """
+        if not selected_paths:
+            return None
+        ranges = state.get("transcript_ranges", {})
+        ends = [ranges[p.name][1] for p in selected_paths if p.name in ranges]
+        return max(ends) if ends else None
 
     # ---------------------------------------------------------- Title / status badge
     def _update_title(self):
@@ -1522,6 +1881,28 @@ class StudyApp:
             self._cancel_processing_event.set()
             self._log("🛑 طلب إلغاء - هيوقف بعد ما يخلص الجزء الحالي...")
 
+    def _maybe_suggest_nvidia_after_drop(self):
+        """
+        لو حصل توقف جزئي (drop) في التلخيص، وNVIDIA مش متسجل، بنقترح
+        عليه يضيفه كـ fallback تالت - مرة واحدة بس لكل جلسة تشغيل، عشان
+        منزعجوش بنفس الاقتراح كل مرة يحصل فيها drop.
+        """
+        if getattr(self, "_nvidia_suggested_this_session", False):
+            return
+        if process_lecture.NVIDIA_API_KEY.strip():
+            return
+        self._nvidia_suggested_this_session = True
+        import first_run_setup
+        first_run_setup.prompt_for_missing_key(
+            self.root, PALETTE, "nvidia", on_done=self._on_nvidia_suggestion_done,
+            context="drop_warning",
+        )
+
+    def _on_nvidia_suggestion_done(self, saved: bool):
+        if saved:
+            self._refresh_api_status_label()
+            self._log("✓ تم حفظ مفتاح NVIDIA - هيتستخدم تلقائي كـ fallback تالت من دلوقتي.")
+
     def _process_worker(self, lecture: str, selected_paths: list, explain: bool, mode: str = "lecture"):
         self._begin_processing()
         try:
@@ -1534,8 +1915,25 @@ class StudyApp:
                 return
 
             if explain and not self._cancel_processing_event.is_set():
-                process_lecture.summarize_new_part(lecture, full_text, state, mode=mode)
-                self._log_threadsafe(f"✓ خلص! النوتس محفوظة في: {MARKDOWN_FOLDER / (lecture + '.md')}")
+                # استراحة قصيرة بين مرحلة التفريغ ومرحلة التلخيص - المرحلتين
+                # بيشاركوا نفس سقف الـ rate limit عند بعض المزوّدين (زي
+                # Groq)، فبنديله فرصة "يتنفس" قبل ما نبدأ نضغط عليه تاني.
+                self._log_threadsafe("⏳ استراحة قصيرة قبل مرحلة التلخيص...")
+                time.sleep(8)
+                # التلخيص بيقف عند حدود الأجزاء المحددة بس - لو فيه نص قديم
+                # متراكم من قبل كده لسه مش متلخص (مثلاً من محاولة فشلت)،
+                # مش هيتجاب زيادة عن التحديد الحالي من غير قصد.
+                end_chars = self._end_chars_for_selection(state, selected_paths)
+                completed = process_lecture.summarize_new_part(
+                    lecture, full_text, state, mode=mode, end_chars=end_chars,
+                )
+                if completed:
+                    self._log_threadsafe(f"✓ خلص! النوتس محفوظة في: {MARKDOWN_FOLDER / (lecture + '.md')}")
+                else:
+                    self._log_threadsafe(
+                        "⚠ اتحفظ اللي خلص لحد دلوقتي بس مش كل الجزء الجديد - دوس 'فرّغ + لخص' تاني عشان تكمل الباقي."
+                    )
+                    self.root.after(300, self._maybe_suggest_nvidia_after_drop)
             elif not explain:
                 self._log_threadsafe(f"✓ خلص التفريغ! النص الخام في: {TRANSCRIPT_FOLDER / (lecture + '.txt')}")
             self.root.after(0, _beep)
@@ -1562,12 +1960,17 @@ class StudyApp:
             show_info("تنبيه", "مفيش نص متفرغ لسه لهذه المحاضرة (فرّغ الأول).")
             return
 
+        # نلقط الأجزاء المحددة دلوقتي في الليست - هتستخدم بعد كده تحدّد
+        # التلخيص يوقف عند حدودها بس، بدل ما ياخد كل النص الجديد المتراكم
+        # (اللي ممكن يكون فيه نص أقدم لسه مش متلخص من محاولة سابقة فشلت).
+        selected_paths = self._get_selected_paths()
+
         self._log("بدأ تحويل النص المفرّغ الموجود لنوتس (من غير تفريغ صوت إضافي)...")
         threading.Thread(
-            target=self._notes_only_worker, args=(lecture, transcript_path, mode), daemon=True
+            target=self._notes_only_worker, args=(lecture, transcript_path, mode, selected_paths), daemon=True
         ).start()
 
-    def _notes_only_worker(self, lecture: str, transcript_path, mode: str = "lecture"):
+    def _notes_only_worker(self, lecture: str, transcript_path, mode: str = "lecture", selected_paths: list = None):
         self._begin_processing()
         try:
             state = load_state(lecture)
@@ -1578,8 +1981,21 @@ class StudyApp:
                 self._log_threadsafe("النص الخام فاضي.")
                 return
 
-            process_lecture.summarize_new_part(lecture, full_text, state, mode=mode)
-            self._log_threadsafe(f"✓ خلص! النوتس محفوظة في: {MARKDOWN_FOLDER / (lecture + '.md')}")
+            end_chars = self._end_chars_for_selection(state, selected_paths or [])
+            if end_chars is not None:
+                self._log_threadsafe(
+                    f"[i] هيلخّص لحد نهاية الأجزاء المحددة بس ({len(selected_paths)} جزء/أجزاء)، مش كل النص الجديد المتراكم."
+                )
+            completed = process_lecture.summarize_new_part(
+                lecture, full_text, state, mode=mode, end_chars=end_chars,
+            )
+            if completed:
+                self._log_threadsafe(f"✓ خلص! النوتس محفوظة في: {MARKDOWN_FOLDER / (lecture + '.md')}")
+            else:
+                self._log_threadsafe(
+                    "⚠ اتحفظ اللي خلص لحد دلوقتي بس مش كل الجزء الجديد - دوس الزرار تاني عشان تكمل الباقي."
+                )
+                self.root.after(300, self._maybe_suggest_nvidia_after_drop)
             self.root.after(0, _beep)
 
         except Exception as e:
@@ -1643,8 +2059,8 @@ class StudyApp:
         header.configure(height=64)
         tk.Label(
             header, text="🗑  مسح بيانات المحاضرة", bg=PALETTE["danger"], fg="white",
-            font=("Segoe UI", 14, "bold"), anchor="e",
-        ).pack(side="right", padx=20, pady=14)
+            font=("Segoe UI", 14, "bold"), anchor="w",
+        ).pack(side="left", padx=20, pady=14)
 
         ttk.Label(
             win, text=f"اختار بالظبط أي ريكورد وأي تفريغ عايز تمسحه من «{lecture}»:",
@@ -1654,10 +2070,12 @@ class StudyApp:
 
         ttk.Label(
             win,
+            # سطرين صريحين (\n) بدل الاعتماد على wraplength التلقائي -
+            # حساب عرض الخط بيختلف بين ويندوز ولينكس خصوصًا مع الإيموجي،
+            # فسطر صريح مضمون 100% على أي نظام تشغيل.
             text="🎙 = ملف الصوت الخام لهذا الجزء\n"
-                 "📝 = التفريغ بتاعه بس "
-                 "(متاح للأجزاء المتفرّغة اللي لسه مش متشرّحة فقط، لأن اللي "
-                 "اتشرح بالفعل بُنيت النوتس عليه)",
+                 "📝 = التفريغ بتاعه بس (متاح للأجزاء المتفرّغة اللي لسه "
+                 "مش متشرّحة فقط، لأن اللي اتشرح بالفعل بُنيت النوتس عليه)",
             background=PALETTE["bg"], foreground=PALETTE["text_muted"],
             font=("Segoe UI", 8), justify="right", wraplength=720,
         ).pack(anchor="e", padx=16, pady=(0, 8))
@@ -1864,8 +2282,8 @@ class StudyApp:
         header.configure(height=56)
         tk.Label(
             header, text="⚠  تأكيد نهائي", bg=PALETTE["danger"], fg="white",
-            font=("Segoe UI", 13, "bold"), anchor="e",
-        ).pack(side="right", padx=20, pady=12)
+            font=("Segoe UI", 13, "bold"), anchor="w",
+        ).pack(side="left", padx=20, pady=12)
 
         ttk.Label(
             win, text=message, background=PALETTE["bg"], foreground=PALETTE["danger"],
@@ -1971,6 +2389,74 @@ class StudyApp:
         except Exception as e:
             show_error("خطأ", f"مقدرش أفتح الملف: {e}")
 
+    def _show_transcript_viewer(self):
+        lecture = self.current_lecture
+        txt_path = TRANSCRIPT_FOLDER / f"{lecture}.txt" if lecture else None
+        if not lecture or not txt_path.exists():
+            show_info("تنبيه", "مفيش ملف تفريغ لسه لهذه المحاضرة.")
+            return
+
+        with open(txt_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        win = tk.Toplevel(self.root)
+        win.title(f"تفريغ: {lecture}")
+        win.geometry("820x680")
+        win.configure(bg=PALETTE["bg"])
+
+        header = tk.Frame(win, bg=PALETTE["accent"], width=820)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=52)
+        tk.Label(
+            header, text=f"📃  تفريغ: {lecture}", bg=PALETTE["accent"], fg="white",
+            font=("Segoe UI", 12, "bold"), anchor="w",
+        ).pack(side="left", padx=20, pady=10)
+
+        toolbar = ttk.Frame(win, style="TFrame")
+        toolbar.pack(fill="x", padx=8, pady=(6, 0))
+
+        copy_btn = self._card_button(
+            toolbar, "📋  Copy", None, PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
+            font=("Segoe UI", 9, "bold"), padx=12, pady=6,
+        )
+        copy_btn.pack(side="left")
+
+        def _do_copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(content)
+            self.root.update()
+            # فيدباك بصري فوري: يتحول أخضر ومكتوب "Copied" لمدة ثانيتين،
+            # بعدها يرجع لشكله وألوانه الأصلية تلقائي.
+            copy_btn.config(
+                text="✓  Copied", bg=PALETTE["success"], activebackground=PALETTE["success"],
+            )
+            copy_btn._normal_bg = PALETTE["success"]
+
+            def _reset():
+                copy_btn.config(
+                    text="📋  Copy", bg=PALETTE["accent_soft"],
+                    activebackground=PALETTE["accent_soft_dark"],
+                )
+                copy_btn._normal_bg = PALETTE["accent_soft"]
+
+            win.after(2000, _reset)
+
+        copy_btn.config(command=_do_copy)
+        _add_tooltip(copy_btn, "Copy the entire raw transcript text to the clipboard.")
+
+        text_frame = tk.Frame(win, bg=PALETTE["bg"])
+        text_frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+        text_widget = scrolledtext.ScrolledText(
+            text_frame, wrap="word", font=("Segoe UI", 11),
+            bg="white", fg=PALETTE["text"], relief="flat", bd=1,
+            padx=12, pady=10,
+        )
+        text_widget.pack(fill="both", expand=True)
+        text_widget.insert("1.0", content)
+        text_widget.config(state="disabled")  # عرض للقراءة بس، من غير تعديل بالغلط
+
     def _show_notes_viewer(self):
         lecture = self.current_lecture
         md_path = MARKDOWN_FOLDER / f"{lecture}.md" if lecture else None
@@ -1989,8 +2475,8 @@ class StudyApp:
         header.configure(height=52)
         tk.Label(
             header, text=f"📄  نوتس: {lecture}", bg=PALETTE["accent"], fg="white",
-            font=("Segoe UI", 12, "bold"), anchor="e",
-        ).pack(side="right", padx=20, pady=10)
+            font=("Segoe UI", 12, "bold"), anchor="w",
+        ).pack(side="left", padx=20, pady=10)
 
         toolbar = ttk.Frame(win, style="TFrame")
         toolbar.pack(fill="x", padx=8, pady=(6, 0))
@@ -2046,13 +2532,23 @@ class StudyApp:
             content = f.read()
 
         content_with_math = render_math_to_html_images(content, fg_color="#1c1c1c")
-        body = md_lib.markdown(content_with_math, extensions=["fenced_code", "tables", "nl2br"])
+        body = md_lib.markdown(
+            content_with_math,
+            extensions=["fenced_code", "codehilite", "tables", "nl2br"],
+            extension_configs={
+                "codehilite": {"guess_lang": False, "css_class": "codehilite", "noclasses": False},
+            },
+        )
         body = _colorize_blockquotes(body)
 
         highlight_css = "\n".join(
             f'blockquote.{cls} {{ background: {bg}; border-right: 4px solid {border}; }}'
             for cls, bg, border in HIGHLIGHT_STYLES.values()
         )
+
+        # تلوين الكود (syntax highlighting) حقيقي عن طريق Pygments بستايل
+        # غامق قريب من VS Code Dark، بدل الخلفية الرمادية البسيطة القديمة.
+        pygments_css = HtmlFormatter(style="monokai").get_style_defs(".codehilite")
 
         html = f"""<html dir="rtl" lang="ar">
 <head><meta charset="utf-8">
@@ -2065,13 +2561,18 @@ strong, b {{ unicode-bidi: embed; }}
 ul, ol {{ direction: rtl; text-align: right; padding-right: 22px; padding-left: 0;
     margin-right: 0; list-style-position: outside; }}
 li {{ direction: rtl; text-align: right; margin-bottom: 6px; }}
-code, pre {{ direction: ltr; text-align: left; unicode-bidi: embed; font-family: Consolas, monospace;
-    background: #f4f4f4; border-radius: 4px; }}
-pre {{ padding: 10px; overflow-x: auto; }}
-code {{ padding: 2px 5px; }}
+code {{ direction: ltr; text-align: left; unicode-bidi: embed; font-family: Consolas, 'Courier New', monospace;
+    background: #f4f4f4; border-radius: 4px; padding: 2px 5px; }}
+div.codehilite {{ direction: ltr; text-align: left; margin: 12px 0; border-radius: 8px;
+    overflow: hidden; background: #1e1e1e; box-shadow: 0 1px 4px rgba(0,0,0,0.25); }}
+div.codehilite pre {{ direction: ltr; text-align: left; unicode-bidi: embed;
+    font-family: Consolas, 'Courier New', monospace; font-size: 13px;
+    margin: 0; padding: 14px 16px; overflow-x: auto; background: #1e1e1e; color: #d4d4d4; }}
+div.codehilite code {{ background: transparent; padding: 0; }}
 blockquote {{ direction: rtl; text-align: right; background: #f8f4e3; border-right: 4px solid #d4a017;
     margin: 10px 0; padding: 8px 14px; border-radius: 4px; }}
 {highlight_css}
+{pygments_css}
 table {{ direction: rtl; border-collapse: collapse; width: 100%; margin: 12px 0; }}
 td, th {{ border: 1px solid #ccc; padding: 6px 10px; text-align: right; }}
 </style></head>
