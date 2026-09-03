@@ -18,7 +18,6 @@ from dotenv import load_dotenv
 from google import genai
 
 from state_manager import (
-    RECORD_FOLDER,
     TRANSCRIPT_FOLDER,
     MARKDOWN_FOLDER,
     load_state,
@@ -75,7 +74,7 @@ def _progress(done: int, total: int, label: str = ""):
 _ERROR_PATTERNS = [
     (("api_key_invalid", "invalid api key", "api key not valid", "401"),
      "مفتاح الـ API غلط أو مش صالح - راجع ملف .env"),
-    (("quota", "rate limit", "429", "resource_exhausted"),
+    (("quota", "rate limit", "429", "resource_exhausted", "tokens per minute", " tpm ", "requests per minute", " rpm "),
      "تجاوزت الحد المسموح به من الطلبات (Rate limit/Quota) - جرب تاني بعد شوية"),
     (("permission_denied", "403"),
      "مفتاح الـ API مالوش صلاحية للموديل ده"),
@@ -86,6 +85,21 @@ _ERROR_PATTERNS = [
     (("file too large", "payload too large", "413"),
      "حجم الملف أكبر من الحد المسموح به عند المزوّد"),
 ]
+
+# كلمات مفتاحية بتدل إن الخطأ سببه تحديد معدل الطلبات (rate limit) عند
+# المزوّد - سواء كود 429 القياسي أو 413 لما بيتحسب على أساس tokens-per-
+# minute (زي Groq أحياناً). الأخطاء دي "مؤقتة" بطبيعتها وبتستاهل إعادة
+# محاولة بعد استنى، عكس أخطاء زي مفتاح غلط اللي مفيش داعي نعيد نحاول فيها.
+_RATE_LIMIT_KEYWORDS = (
+    "429", "quota", "rate limit", "resource_exhausted",
+    "tokens per minute", "tpm", "requests per minute", " rpm",
+    "413", "too large", "too many requests",
+)
+
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    low = str(e).lower()
+    return any(k in low for k in _RATE_LIMIT_KEYWORDS)
 
 
 def friendly_error(e: Exception) -> str:
@@ -107,6 +121,13 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_TRANSCRIBE_MODEL = "whisper-large-v3"
 GROQ_TEXT_MODEL = "openai/gpt-oss-120b"
 
+# NVIDIA NIM بيستخدم بس للتلخيص/النوتس (مش عنده Speech-to-Text)، وده fallback
+# تالت اختياري - البرنامج شغال عادي تمامًا من غيره (زي أي مفتاح تاني).
+# مجاني دائم من غير بطاقة ائتمان (build.nvidia.com)، وواجهته متوافقة مع
+# OpenAI (نفس مكتبة openai القياسية، مش SDK خاص بيهم).
+NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+NVIDIA_TEXT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
+
 # ------------------ كتالوج الموديلات المتاحة للاختيار اليدوي ------------------
 # كل قاموس هنا بيمثّل قائمة اختيار واحدة في الواجهة (زرار/dropdown واحد).
 # المفتاح "auto" دايمًا الافتراضي، وبيمثّل نفس سلسلة المحاولة القديمة
@@ -122,13 +143,15 @@ TRANSCRIBE_MODEL_CHOICES = {
 }
 
 SUMMARY_MODEL_CHOICES = {
-    "auto":            ("🔄 Auto (Gemini → Groq)", None),
+    "auto":            ("🔄 Auto (Gemini → Groq → NVIDIA)", None),
     "gemini_flash":    ("Gemini - gemini-3.6-flash (balanced)", ("gemini", "gemini-3.6-flash")),
     "gemini_lite":     ("Gemini - gemini-3.5-flash-lite (fastest)", ("gemini", "gemini-3.5-flash-lite")),
     "gemini_37":       ("Gemini - gemini-3.7-flash (strongest Gemini)", ("gemini", "gemini-3.7-flash")),
     "groq_gptoss120b": ("Groq - gpt-oss-120b (strongest)", ("groq", "openai/gpt-oss-120b")),
     "groq_gptoss20b":  ("Groq - gpt-oss-20b (fastest)", ("groq", "openai/gpt-oss-20b")),
     "groq_qwen36":     ("Groq - qwen3.6-27b", ("groq", "qwen/qwen3.6-27b")),
+    "nvidia_ultra":    ("NVIDIA - nemotron-3-ultra-550b (strongest)", ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b")),
+    "nvidia_lightning": ("NVIDIA - nemotron-3.5-lightning-30b (fastest)", ("nvidia", "nvidia/nemotron-3.5-lightning-30b-a3b")),
 }
 
 TRANSCRIBE_MODEL_CHOICE = os.environ.get("TRANSCRIBE_MODEL_CHOICE", "auto")
@@ -138,6 +161,15 @@ if TRANSCRIBE_MODEL_CHOICE not in TRANSCRIBE_MODEL_CHOICES:
 SUMMARY_MODEL_CHOICE = os.environ.get("SUMMARY_MODEL_CHOICE", "auto")
 if SUMMARY_MODEL_CHOICE not in SUMMARY_MODEL_CHOICES:
     SUMMARY_MODEL_CHOICE = "auto"
+
+# آخر مزوّد نجح فعليًا في كل مهمة (transcribe/summary) - بتتحدث لحظيًا كل
+# ما محاولة تنجح (انظر transcribe_audio_file/explain_text تحت). الهدف
+# الوحيد منها: لما الاختيار يكون "Auto"، الواجهة تقدر تعرض لوجو المزوّد
+# اللي فعليًا بيشتغل دلوقتي بدل أيقونة عامة - مجرد قيمة في الذاكرة
+# لحاجة عرض بصري بس، مش جزء من منطق الـ fallback نفسه ومش بتتحفظ بين
+# التشغيلات (يرجعوا None تاني عند إعادة تشغيل البرنامج).
+LAST_USED_TRANSCRIBE_PROVIDER = None
+LAST_USED_SUMMARY_PROVIDER = None
 
 
 def _save_choice_to_env(key_name: str, value: str) -> None:
@@ -210,6 +242,19 @@ def _run_with_timeout(target_callable, timeout_sec: float):
     return "ok", result_box.get("value")
 
 MAX_CHARS_PER_CHUNK = 15000
+
+# ------------------ إعدادات حماية من الـ Rate Limit ------------------
+# استراحة قصيرة بين كل مقطع (chunk) والتاني وقت التلخيص، وبين كل ملف
+# صوتي والتاني وقت التفريغ - عشان نوزّع الطلبات على الوقت (throttling)
+# بدل ما نطلقها كلها متلاحقة ونضغط على سقف tokens-per-minute بتاع
+# المزوّد فجأة.
+CHUNK_PACING_SECONDS = 2.0
+
+# لو حصل rate-limit error (429/413 tokens-per-minute) في نفس المزوّد،
+# نستنى ونعيد المحاولة على نفس المزوّد بدل ما نسيب فورًا للمزوّد التاني
+# (اللي غالبًا هيكون قريب من نفس المشكلة لو كان مستهلك برضو). الأوقات
+# دي بتكبر تصاعديًا (exponential backoff) زي أي نظام بيتعامل مع API له حد.
+RATE_LIMIT_RETRY_DELAYS = [15, 30]  # بالثواني
 
 # حد حجم الملف المسموح بيه على خطة Groq المجانية (25MB بدون تقطيع الصوت نفسه).
 # لو الجزء أكبر من كده (مثلاً لو ffmpeg مش متثبت وفضل الملف FLAC خام)، نتخطى
@@ -285,6 +330,292 @@ EXPLAIN_PROMPT = """أنت مساعد تدوين ملاحظات أكاديمي (
 نفسه، متخترعش نقط مهمة من عندك، ومتحطش أكتر من صندوق واحد لنفس الجملة لو
 مش محتاجة. خلي كل حاجة مختصرة ومركزة - الهدف نوتس للمراجعة السريعة، مش
 توثيق شامل. متكتبش أي مقدمة أو خاتمة عامة، ادخل في النقط على طول."""
+
+
+# =========================================================================
+# تخصيص البرومبت حسب مجال/مادة المحاضرة
+# =========================================================================
+# EXPLAIN_PROMPT فوق ده هو الافتراضي (برمجة/علوم حاسب) - مش بيتلمس خالص،
+# فأي محاضرة قديمة أو جديدة من غير مجال محدد بترجع نفس النص ده حرفيًا
+# (return EXPLAIN_PROMPT مباشرة في _build_explain_prompt تحت)، فمفيش أي
+# احتمال لفرق ولو حرف واحد في السلوك الافتراضي الحالي.
+#
+# لكل مجال تاني، بنستبدل بس 3 أجزاء (الهيدر، أمثلة قاعدة 3، وقاعدة 5)
+# بنسخة تخصّه، وبنسيب الباقي (قواعد 1، 2، وكل صناديق الـ Markdown) مشترك
+# 100% زي الأصل - عشان التناسق البصري والهيكلي يفضل واحد لأي مجال.
+
+DEFAULT_SUBJECT_LABEL = "برمجة/علوم حاسب"
+
+# النص المشترك بين كل المجالات (قواعد 1، 2، وكل الصناديق + الخاتمة) -
+# منسوخ حرفيًا من EXPLAIN_PROMPT فوق (من بعد قاعدة 2 وقبل قاعدة 3، وكل
+# حاجة من بعد قاعدة 5 لحد الآخر) عشان نضمن التطابق ومنكررش الصيانة في
+# مكانين مختلفين لو احتجنا نعدل صندوق أو نضيف واحد جديد بعدين.
+_SHARED_RULES_HEAD = """1. حدّد كل نقطة/فكرة قالها المحاضر، واكتبها كعنوان فرعي قصير (### العنوان).
+2. تحت كل عنوان، اكتب نقاط (bullet points) مختصرة ومباشرة تلخص اللي
+   المحاضر قاله بالظبط - مش تشرح بإسهاب، خد جوهر الكلام وبس."""
+
+_SHARED_CALLOUTS_AND_CLOSING = """**الأهم: لازم تبرز أي حاجة المحاضر شدّد عليها أو كررها أو نبّه عليها أو
+طلبها من اللي بيتفرج**، باستخدام الصناديق دي بالظبط (Markdown blockquote) -
+كل حالة ليها إيموجي ولون مختلف عشان الطالب يقدر يميّز بسرعة وهو بيراجع:
+
+- تأكيد على نقطة مهمة (زي "ده مهم جداً"، أو كرر نفس الفكرة أكتر من مرة):
+  > 💡 **مهم:** [النقطة اللي أكد عليها]
+
+- سؤال إنترفيو محتمل (زي "هيسألوك في الإنترفيو عن كذا"، أو "دي حاجة بتتسأل
+  كتير"، أو "لازم تعرفها للإنترفيوهات"):
+  > 🎯 **سؤال إنترفيو محتمل:** [السؤال أو النقطة]
+
+- تحذير أو خطأ شائع أو حاجة الطلبة بينسوها:
+  > ⚠️ **تنبيه:** [النقطة]
+
+- **مهمة/تاسك مطلوب تنفيذه** - أي حاجة المحاضر طلب من اللي بيتفرج ينفذها
+  بنفسه (زي "جرب كذا وطبقه"، "دي تاسك ليكم"، "هوم ورك"، "قبل الحصة الجاية
+  عايزكم تعملوا كذا"، "وقف الفيديو وحل كذا لوحدك"، "ابحث عن كذا وارجعلي"):
+  > ✅ **تاسك/مطلوب تنفيذه:** [المهمة بالظبط زي ما طلبها المحاضر]
+
+- مرجع أو مصدر خارجي نصح بيه المحاضر (كتاب، لينك، بيبر، توثيق رسمي،
+  فيديو تاني، قناة يوصي بمتابعتها):
+  > 📚 **مصدر إضافي:** [اسم المصدر/الموضوع اللي يتراجع منه]
+
+- تعريف رسمي لمصطلح جديد قدّمه المحاضر لأول مرة بشكل واضح ("كذا معناه
+  كذا"، "التعريف الرسمي لـ..."):
+  > 📌 **تعريف:** [المصطلح: التعريف المختصر]
+
+- خلاصة/تلخيص قاله المحاضر نفسه لجزء كامل ("يعني اللي احنا اتكلمنا عنه
+  بيلخص في...", "خلاصة الكلام..."):
+  > 🔁 **خلاصة:** [النقاط اللي لخصها]
+
+- مثال تطبيقي أو تمرين حلّه المحاضر بالتفصيل خطوة بخطوة أثناء الشرح
+  (مش مجرد مثال عابر - لما يبقى فعلاً بيحل حاجة كاملة قدام الطلبة):
+  > 🧩 **مثال محلول:** [وصف مختصر للمثال والخطوات الأساسية]
+
+- أي حاجة مرتبطة بميعاد أو امتحان أو كويز أو تسليم (deadline، تاريخ
+  امتحان، آخر ميعاد تسليم مشروع):
+  > 🕒 **ميعاد/امتحان:** [التفاصيل]
+
+استخدم الصناديق دي بس لما فعلاً يكون فيه إشارة واضحة من المحاضر في الكلام
+نفسه، متخترعش نقط مهمة من عندك، ومتحطش أكتر من صندوق واحد لنفس الجملة لو
+مش محتاجة. خلي كل حاجة مختصرة ومركزة - الهدف نوتس للمراجعة السريعة، مش
+توثيق شامل. متكتبش أي مقدمة أو خاتمة عامة، ادخل في النقط على طول."""
+
+# كل مجال (غير الافتراضي) بيحدد بس 4 حاجات: الهيدر، أمثلة قاعدة 3، قاعدة
+# 4 (المصطلحات)، وقاعدة 5 (التوثيق الدقيق للتفاصيل المتخصصة). كل حاجة
+# تانية بتيجي من _SHARED_RULES_HEAD و_SHARED_CALLOUTS_AND_CLOSING فوق.
+_GENERIC_RULE_4 = (
+    "اكتب أي مصطلح متخصص بلغته الأصلية اللي اتقال بيها المحاضر (إنجليزي "
+    "غالبًا)، والباقي عربي فصحى واضح."
+)
+
+SUBJECT_PROFILES: dict[str, dict[str, str]] = {
+    "هندسة": {
+        "header": (
+            'أنت مساعد تدوين ملاحظات أكاديمي (Note Taker) متخصص في\n'
+            'المحتوى الهندسي (كهرباء، ميكانيكا، مدني، اتصالات، عمارة، هندسة\n'
+            'طبية، كهروميكانيكس...إلخ). هتستلم جزء من نص مفرغ من محاضرة\n'
+            'صوتية بصوت المحاضر (Instructor)، ممكن فيه أخطاء بسيطة من\n'
+            'التفريغ الآلي، وممكن يكون بلهجة مصرية.'
+        ),
+        "rule3_terms": "مصطلح هندسي، معادلة، خطوة في تصميم أو حساب",
+        "rule3_examples": "معادلة أو قيمة رقمية",
+        "rule4": _GENERIC_RULE_4,
+        "rule5": (
+            "أي معادلة أو قانون هندسي يتكتب بصيغة LaTeX ($...$) بالظبط، "
+            "وأي قيمة رقمية (قوة، جهد، حمل، تردد، إجهاد...إلخ) تتكتب بالرقم "
+            "ووحدة القياس الدقيقة زي ما اتقالت، وأي كود/معيار مذكور (ECP, "
+            "IEEE, ISO...إلخ) يتكتب حرفيًا زي ما اتقال."
+        ),
+    },
+    "طب": {
+        "header": (
+            'أنت مساعد تدوين ملاحظات أكاديمي (Note Taker) متخصص في\n'
+            'المحتوى الطبي (تشريح، فسيولوجي، باثولوجي، فارماكولوجي، حالات\n'
+            'إكلينيكية...إلخ). هتستلم جزء من نص مفرغ من محاضرة صوتية بصوت\n'
+            'المحاضر (Instructor)، ممكن فيه أخطاء بسيطة من التفريغ الآلي،\n'
+            'وممكن يكون بلهجة مصرية.'
+        ),
+        "rule3_terms": "مصطلح طبي، آلية فسيولوجية، خطوة في بروتوكول تشخيصي أو علاجي",
+        "rule3_examples": "قيمة معملية أو جرعة",
+        "rule4": _GENERIC_RULE_4,
+        "rule5": (
+            "أي جرعة دواء، قيمة معملية طبيعية (Normal Range)، أو خطوة في "
+            "بروتوكول تشخيصي/علاجي تتكتب بدقة تامة (الرقم ووحدة القياس "
+            "بالظبط)، وتتحط في جدول Markdown منظّم لو فيه أكتر من قيمة."
+        ),
+    },
+    "قانون": {
+        "header": (
+            'أنت مساعد تدوين ملاحظات أكاديمي (Note Taker) متخصص في\n'
+            'المحتوى القانوني (نصوص تشريعية، سوابق قضائية، مبادئ قانونية...\n'
+            'إلخ). هتستلم جزء من نص مفرغ من محاضرة صوتية بصوت المحاضر\n'
+            '(Instructor)، ممكن فيه أخطاء بسيطة من التفريغ الآلي، وممكن\n'
+            'يكون بلهجة مصرية.'
+        ),
+        "rule3_terms": "مصطلح قانوني، ركن من أركان الجريمة أو العقد، خطوة في إجراء قضائي",
+        "rule3_examples": "نص المادة القانونية",
+        "rule4": _GENERIC_RULE_4,
+        "rule5": (
+            "أي رقم مادة قانونية أو اسم سابقة قضائية استند لها المحاضر "
+            "يتكتب حرفيًا زي ما اتقال، من غير إعادة صياغة أو تلخيص."
+        ),
+    },
+    "إدارة أعمال": {
+        "header": (
+            'أنت مساعد تدوين ملاحظات أكاديمي (Note Taker) متخصص في محتوى\n'
+            'إدارة الأعمال (استراتيجيات، أطر عمل، دراسات حالة، تسويق، مالية\n'
+            '...إلخ). هتستلم جزء من نص مفرغ من محاضرة صوتية بصوت المحاضر\n'
+            '(Instructor)، ممكن فيه أخطاء بسيطة من التفريغ الآلي، وممكن\n'
+            'يكون بلهجة مصرية.'
+        ),
+        "rule3_terms": "مصطلح إداري، خطوة في إطار عمل، مؤشر أداء",
+        "rule3_examples": "رقم أو نسبة",
+        "rule4": _GENERIC_RULE_4,
+        "rule5": (
+            "أي إطار عمل (Framework) زي SWOT أو Porter's Five Forces يتكتب "
+            "بكل عناصره الأساسية كاملة، مش بس بالاسم، وأي رقم أو نسبة "
+            "مالية/تسويقية تتكتب بدقة زي ما اتقالت."
+        ),
+    },
+    "لغات": {
+        "header": (
+            'أنت مساعد تدوين ملاحظات أكاديمي (Note Taker) متخصص في تعليم\n'
+            'اللغات (مفردات، قواعد، تعبيرات، نطق...إلخ). هتستلم جزء من نص\n'
+            'مفرغ من محاضرة صوتية بصوت المحاضر (Instructor)، ممكن فيه\n'
+            'أخطاء بسيطة من التفريغ الآلي، وممكن يكون بلهجة مصرية.'
+        ),
+        "rule3_terms": "تعبير جديد، قاعدة نحوية، فرق بين كلمتين متشابهتين",
+        "rule3_examples": "مثال على الاستخدام",
+        "rule4": _GENERIC_RULE_4,
+        "rule5": (
+            "أي كلمة أو تعبير جديد يتكتب بصيغة موحدة: **الكلمة/التعبير** "
+            "(بلغته الأصلية) = المعنى بالعربي، مع مثال قصير على استخدامه "
+            "لو المحاضر ذكره."
+        ),
+    },
+    "رياضيات وعلوم": {
+        "header": (
+            'أنت مساعد تدوين ملاحظات أكاديمي (Note Taker) متخصص في\n'
+            'الرياضيات والعلوم الأساسية (فيزياء، كيمياء، أحياء...إلخ).\n'
+            'هتستلم جزء من نص مفرغ من محاضرة صوتية بصوت المحاضر\n'
+            '(Instructor)، ممكن فيه أخطاء بسيطة من التفريغ الآلي، وممكن\n'
+            'يكون بلهجة مصرية.'
+        ),
+        "rule3_terms": "مفهوم رياضي أو علمي، خطوة في إثبات أو تجربة",
+        "rule3_examples": "معادلة أو نتيجة رقمية",
+        "rule4": _GENERIC_RULE_4,
+        "rule5": (
+            "أي معادلة أو قانون علمي يتكتب بصيغة LaTeX ($...$) بالظبط من "
+            "غير أي تبسيط أو تقريب، وأي نتيجة تجربة أو قيمة رقمية تتكتب "
+            "بدقة مع وحدة القياس."
+        ),
+    },
+    "علوم إنسانية وتاريخ": {
+        "header": (
+            'أنت مساعد تدوين ملاحظات أكاديمي (Note Taker) متخصص في العلوم\n'
+            'الإنسانية والتاريخ (أحداث تاريخية، شخصيات، مصادر، نظريات...\n'
+            'إلخ). هتستلم جزء من نص مفرغ من محاضرة صوتية بصوت المحاضر\n'
+            '(Instructor)، ممكن فيه أخطاء بسيطة من التفريغ الآلي، وممكن\n'
+            'يكون بلهجة مصرية.'
+        ),
+        "rule3_terms": "حدث تاريخي، شخصية، نظرية أو مفهوم فكري",
+        "rule3_examples": "تاريخ أو مصدر",
+        "rule4": _GENERIC_RULE_4,
+        "rule5": (
+            "أي تاريخ أو اسم شخصية تاريخية أو مصدر أساسي (كتاب، وثيقة) "
+            "يتكتب بدقة زي ما اتقال (السنة بالظبط، الاسم كامل)."
+        ),
+    },
+}
+
+
+def _other_subject_profile(subject_name: str) -> dict[str, str]:
+    """بروفايل ديناميكي لأي مادة حرة كتبها المستخدم بنفسه (اختيار "أخرى")،
+    مش من الليستة المعروفة فوق."""
+    return {
+        "header": (
+            f'أنت مساعد تدوين ملاحظات أكاديمي (Note Taker) متخصص في محتوى\n'
+            f'"{subject_name}". هتستلم جزء من نص مفرغ من محاضرة صوتية بصوت\n'
+            f'المحاضر (Instructor)، ممكن فيه أخطاء بسيطة من التفريغ الآلي،\n'
+            f'وممكن يكون بلهجة مصرية.'
+        ),
+        "rule3_terms": "مصطلح متخصص، خطوة أو مفهوم مهم",
+        "rule3_examples": "تفصيل دقيق أو رقم",
+        "rule4": _GENERIC_RULE_4,
+        "rule5": (
+            "وثّق أي مصطلح أو رقم أو تفصيل دقيق ذكره المحاضر بالظبط زي ما "
+            "اتقال، من غير تقريب أو تبسيط."
+        ),
+    }
+
+
+def _build_explain_prompt(subject: str, enable_corrections: bool = False, enable_additions: bool = False) -> str:
+    """
+    بيبني برومبت "لخص المحاضرة" حسب مجال المحاضرة. لو subject فاضي أو
+    مطابق للافتراضي (برمجة/علوم حاسب)، بيرجع EXPLAIN_PROMPT الأصلي زي ما
+    هو حرفيًا - صفر أي فرق عن السلوك القديم، وده مقصود ومتعمّد عشان أي
+    محاضرة من غير مجال محدد (كل المحاضرات القديمة، وأي جديدة سايبة
+    الإعداد الافتراضي) تفضل بالظبط زي ما كانت شغالة قبل الإضافة دي.
+
+    enable_corrections/enable_additions: إعدادات خاصة بكل محاضرة لوحدها
+    (متخزّنة في state.json)، مش عامة - افتراضيًا الاتنين False.
+    """
+    subject = (subject or "").strip()
+    if not subject or subject == DEFAULT_SUBJECT_LABEL:
+        base = EXPLAIN_PROMPT
+    else:
+        profile = SUBJECT_PROFILES.get(subject) or _other_subject_profile(subject)
+        base = (
+            f"{profile['header']}\n\n"
+            "هدفك: تحوّل كلام المحاضر لنوتس مركزة ومنظمة يقدر الطالب يراجع "
+            "بيها بسرعة، مش مقال طويل. اتبع القواعد دي بالظبط:\n\n"
+            f"{_SHARED_RULES_HEAD}\n"
+            f"3. لو نقطة محتاجة توضيح إضافي عشان تفهم ({profile['rule3_terms']})،\n"
+            "   ضيف سطر توضيح قصير بعدها، أو مثال عملي مختصر جداً "
+            f"({profile['rule3_examples']}) لو ده\n"
+            "   هيوضح الفكرة بسرعة أكتر من الكلام.\n"
+            f"4. {profile['rule4']}\n"
+            f"5. {profile['rule5']}\n\n"
+            f"{_SHARED_CALLOUTS_AND_CLOSING}"
+        )
+
+    addendum = _optional_addendum(enable_corrections, enable_additions)
+    return base + addendum if addendum else base
+
+
+def _optional_addendum(enable_corrections: bool, enable_additions: bool) -> str:
+    """
+    إضافة اختيارية (معطّلة افتراضيًا) لصندوقين إضافيين: 🔧 تصحيح و💬 إضافة
+    من المدوّن. بيتفعّلوا بس لو المستخدم فعّل الـ checkbox المقابل وقت
+    إنشاء المحاضرة (إعداد خاص بالمحاضرة دي بس، مش عام) - افتراضيًا
+    الاتنين متقفلين ومفيش أي تغيير في البرومبت خالص.
+    """
+    parts = []
+    if enable_corrections:
+        parts.append(
+            '- لو المحاضر قال معلومة غلط factually بشكل مؤكد 100% (رقم غلط، '
+            'قانون علمي متطبق غلط، تسمية غلط) - مش مجرد تبسيط متعمد أو رأي '
+            'شخصي - وضّح التصحيح بهدوء من غير ما تقلل من كلام المحاضر:\n'
+            '  > 🔧 **تصحيح:** المحاضر قال [كذا]، والصحيح هو [كذا]'
+        )
+    if enable_additions:
+        parts.append(
+            '- لو فيه معلومة قصيرة جدًا من معرفتك العامة هتوضّح نقطة '
+            'المحاضر فعليًا (مش حشو ومش تكرار لحاجة اتقالت بالفعل)، '
+            'ضيفها في صندوق منفصل واضح:\n'
+            '  > 💬 **إضافة من المدوّن:** [المعلومة، سطر أو سطرين بحد أقصى]'
+        )
+    if not parts:
+        return ""
+
+    return (
+        "\n\n--- إضافي (مفعّل بمعرفة المستخدم) ---\n\n"
+        "بالإضافة للقواعد فوق، لو حصلت الحالة/الحالات دي بوضوح شديد، "
+        "استخدم الصندوق/الصناديق دي:\n\n"
+        + "\n\n".join(parts)
+        + "\n\nالقاعدة/القواعد دي استثنائية ونادرة - أغلب المحاضرات "
+        "العادية مفيهاش غلط نصححه ولا حاجة تستاهل إضافة، وده طبيعي 100%. "
+        "استخدمهم بس لما يكونوا مستحقين فعلاً، ومتجبرش نفسك تلاقي حاجة "
+        "تحطها تحتهم."
+    )
 
 # البرومبت ده لوضع "خد نوتس" - محضر اجتماع مختصر وعملي، مختلف تمامًا عن
 # أسلوب "لخص المحاضرة" التعليمي فوق. الهدف توثيق اللي اتقال/اتقرر، مش شرحه.
@@ -427,20 +758,35 @@ def transcribe_audio_file(audio_path) -> str:
             continue
 
         label = f"Groq ({model_id})" if provider == "groq" else "Gemini"
-        _log(f"    → بيحاول عبر {label}...")
         fn = (lambda p=audio_path, m=model_id: _transcribe_with_groq(p, m)) if provider == "groq" \
             else (lambda p=audio_path: _transcribe_with_gemini(p))
-        status, result = _run_with_timeout(fn, timeout_sec)
 
-        if status == "ok":
-            _log(f"    ✓ خلص عبر {label} ({time.time() - t0:.1f} ثانية)")
-            return result
-        if status == "timeout":
-            _log(f"    ⚠ {label} اتأخر عن المتوقع (~{timeout_sec:.0f} ثانية) - بيجرب التالي...")
-            errors.append(f"{label}: اتأخر عن المتوقع")
-        else:
+        attempt = 0
+        while True:
+            _log(f"    → بيحاول عبر {label}...")
+            status, result = _run_with_timeout(fn, timeout_sec)
+
+            if status == "ok":
+                _log(f"    ✓ خلص عبر {label} ({time.time() - t0:.1f} ثانية)")
+                global LAST_USED_TRANSCRIBE_PROVIDER
+                LAST_USED_TRANSCRIBE_PROVIDER = provider
+                return result
+
+            if status == "timeout":
+                _log(f"    ⚠ {label} اتأخر عن المتوقع (~{timeout_sec:.0f} ثانية) - بيجرب التالي...")
+                errors.append(f"{label}: اتأخر عن المتوقع")
+                break
+
+            if _is_rate_limit_error(result) and attempt < len(RATE_LIMIT_RETRY_DELAYS):
+                delay = RATE_LIMIT_RETRY_DELAYS[attempt]
+                attempt += 1
+                _log(f"    ⏳ {label} وصل لحد الـ rate limit - بيستنى {delay} ثانية ويعيد نفس المزوّد ({attempt}/{len(RATE_LIMIT_RETRY_DELAYS)})...")
+                time.sleep(delay)
+                continue
+
             _log(f"    ⚠ {label} فشل ({friendly_error(result)}), بيجرب التالي...")
             errors.append(f"{label}: {friendly_error(result)}")
+            break
 
     raise RuntimeError("فشل التفريغ في كل المحاولات:\n  " + "\n  ".join(errors))
 
@@ -479,9 +825,36 @@ def _explain_with_groq(text: str, prompt: str = EXPLAIN_PROMPT, model: str = Non
     return result
 
 
+def _explain_with_nvidia(text: str, prompt: str = EXPLAIN_PROMPT, model: str = None) -> str:
+    if not NVIDIA_API_KEY:
+        raise RuntimeError("NVIDIA_API_KEY مش موجود")
+    from openai import OpenAI
+
+    # NVIDIA NIM بيستخدم واجهة متوافقة مع OpenAI بالكامل - نفس مكتبة
+    # openai القياسية، بس بـ base_url مختلف.
+    client = OpenAI(api_key=NVIDIA_API_KEY, base_url="https://integrate.api.nvidia.com/v1")
+    completion = client.chat.completions.create(
+        model=model or NVIDIA_TEXT_MODEL,
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ],
+        # بعض موديلات NVIDIA (زي nemotron-3-ultra) عندها وضع "تفكير"
+        # (chain-of-thought) بيرجع منفصل في reasoning_content. إحنا محتاجين
+        # النص النهائي بس (النوتس)، فبنقفل الوضع ده عشان الرد يرجع مباشرة
+        # في content من غير خطوات تفكير وسيطة نستهلك وقت/توكنز عليها من
+        # غير فايدة.
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    result = (completion.choices[0].message.content or "").strip()
+    if not result:
+        raise RuntimeError("NVIDIA رجّع نوتس فاضية")
+    return result
+
+
 def _summary_candidates() -> list:
     """نفس فكرة _transcribe_candidates بس لقائمة اختيار موديل التلخيص."""
-    default_chain = [("gemini", None), ("groq", None)]
+    default_chain = [("gemini", None), ("groq", None), ("nvidia", None)]
     choice = SUMMARY_MODEL_CHOICE
     if choice == "auto" or choice not in SUMMARY_MODEL_CHOICES:
         return default_chain
@@ -507,25 +880,100 @@ def explain_text(text: str, prompt: str = EXPLAIN_PROMPT) -> str:
     errors = []
 
     for provider, model_id in candidates:
-        label = f"Groq ({model_id})" if (provider == "groq" and model_id) else (
-            f"Gemini ({model_id})" if (provider == "gemini" and model_id) else provider.capitalize()
-        )
-        _log(f"    → بيحاول عبر {label} (ممكن ياخد وقت حسب طول الجزء)...")
-        fn = (lambda p=prompt, m=model_id: _explain_with_groq(text, p, m)) if provider == "groq" \
-            else (lambda p=prompt, m=model_id: _explain_with_gemini(text, p, m))
-        status, result = _run_with_timeout(fn, timeout_sec)
-
-        if status == "ok":
-            _log(f"    ✓ خلص عبر {label} ({time.time() - t0:.1f} ثانية)")
-            return result
-        if status == "timeout":
-            _log(f"    ⚠ {label} اتأخر عن المتوقع (~{timeout_sec:.0f} ثانية) - بيجرب التالي...")
-            errors.append(f"{label}: اتأخر عن المتوقع")
+        if provider == "groq":
+            label = f"Groq ({model_id})" if model_id else "Groq"
+        elif provider == "gemini":
+            label = f"Gemini ({model_id})" if model_id else "Gemini"
+        elif provider == "nvidia":
+            label = f"NVIDIA ({model_id})" if model_id else "NVIDIA"
         else:
+            label = provider.capitalize()
+
+        if provider == "groq":
+            fn = lambda p=prompt, m=model_id: _explain_with_groq(text, p, m)
+        elif provider == "nvidia":
+            fn = lambda p=prompt, m=model_id: _explain_with_nvidia(text, p, m)
+        else:
+            fn = lambda p=prompt, m=model_id: _explain_with_gemini(text, p, m)
+
+        # نجرب المزوّد ده لحد MAX (1 + عدد محاولات إعادة الاتصال) مرة،
+        # لكن بس لو الفشل بسبب rate limit (مؤقت بطبيعته) - أي فشل تاني
+        # (مفتاح غلط، صلاحيات...) بيتخطى فورًا للمزوّد التالي زي الأول.
+        attempt = 0
+        while True:
+            _log(f"    → بيحاول عبر {label} (ممكن ياخد وقت حسب طول الجزء)...")
+            status, result = _run_with_timeout(fn, timeout_sec)
+
+            if status == "ok":
+                _log(f"    ✓ خلص عبر {label} ({time.time() - t0:.1f} ثانية)")
+                global LAST_USED_SUMMARY_PROVIDER
+                LAST_USED_SUMMARY_PROVIDER = provider
+                return result
+
+            if status == "timeout":
+                _log(f"    ⚠ {label} اتأخر عن المتوقع (~{timeout_sec:.0f} ثانية) - بيجرب التالي...")
+                errors.append(f"{label}: اتأخر عن المتوقع")
+                break
+
+            if _is_rate_limit_error(result) and attempt < len(RATE_LIMIT_RETRY_DELAYS):
+                delay = RATE_LIMIT_RETRY_DELAYS[attempt]
+                attempt += 1
+                _log(f"    ⏳ {label} وصل لحد الـ rate limit - بيستنى {delay} ثانية ويعيد نفس المزوّد ({attempt}/{len(RATE_LIMIT_RETRY_DELAYS)})...")
+                time.sleep(delay)
+                continue
+
             _log(f"    ⚠ {label} فشل ({friendly_error(result)}), بيجرب التالي...")
             errors.append(f"{label}: {friendly_error(result)}")
+            break
 
     raise RuntimeError("فشل الشرح في كل المحاولات:\n  " + "\n  ".join(errors))
+
+
+# كلمات بتدل إن الفشل سببه "الطلب نفسه أكبر من الحد" (مشكلة بنيوية في
+# حجم النص المرسل)، مش استهلاك عام للحصة. الفرق مهم: لو استهلاك عام،
+# الانتظار (retry) بيحل المشكلة. لو الطلب نفسه أكبر من الحد، الانتظار
+# مش هيفرق - نفس النص هيرجع يفشل بنفس السبب - والحل الوحيد إننا نقسّم
+# النص لأجزاء أصغر.
+_STRUCTURAL_SIZE_KEYWORDS = ("too large", "request too large", "payload too large", "413")
+
+
+def _is_structural_size_error(e) -> bool:
+    return any(k in str(e).lower() for k in _STRUCTURAL_SIZE_KEYWORDS)
+
+
+MAX_ADAPTIVE_SPLIT_DEPTH = 2  # أقصى عدد مرات تقسيم لنفس المقطع (2 = لحد ربع الحجم الأصلي)
+
+
+def explain_text_with_split(text: str, prompt: str = EXPLAIN_PROMPT, _depth: int = 0) -> str:
+    """
+    غلاف حول explain_text() بيضيف تقسيم تكيّفي (adaptive splitting): لو
+    النص فشل لأنه "كبير على حد الطلب الواحد" عند المزوّد (مش استهلاك عام
+    بيتصلح بالانتظار)، بيقسّمه لنصين متساويين تقريبًا (عند أقرب نهاية
+    جملة) ويجرب كل نص لوحده بشكل مستقل، لحد MAX_ADAPTIVE_SPLIT_DEPTH مرة
+    تقسيم كحد أقصى - عشان نضمن إن أي نص، مهما كان طويل، له فرصة حقيقية
+    ينجح بدل ما يفشل نهائي بسبب حده الأقصى عند مزوّد معيّن.
+    """
+    try:
+        return explain_text(text, prompt)
+    except Exception as e:
+        too_short_to_split = len(text) < 500
+        depth_exhausted = _depth >= MAX_ADAPTIVE_SPLIT_DEPTH
+        if not _is_structural_size_error(e) or too_short_to_split or depth_exhausted:
+            raise
+
+        _log("    ✂ المقطع كبير على حد الطلب الواحد عند المزوّد - هنقسمه لنصين ونجرب كل نص لوحده...")
+        mid = len(text) // 2
+        split_at = text.rfind(". ", 0, mid)
+        if split_at == -1:
+            split_at = text.rfind(" ", 0, mid)
+        if split_at == -1:
+            split_at = mid
+        first_half = text[:split_at + 1].strip()
+        second_half = text[split_at + 1:].strip()
+
+        note_1 = explain_text_with_split(first_half, prompt, _depth + 1)
+        note_2 = explain_text_with_split(second_half, prompt, _depth + 1)
+        return note_1 + "\n\n" + note_2
 
 
 # =========================================================================
@@ -599,6 +1047,9 @@ def transcribe_files(
                     continue
                 _progress(i, total, "تفريغ الصوت")
 
+                if i < total:
+                    time.sleep(CHUNK_PACING_SECONDS)
+
     if not transcript_path.exists():
         return ""
     with open(transcript_path, "r", encoding="utf-8") as f:
@@ -648,26 +1099,55 @@ def chunk_text(text: str, max_chars: int = MAX_CHARS_PER_CHUNK):
     return chunks or ([text] if text.strip() else [])
 
 
-def summarize_new_part(lecture: str, full_text: str, state: dict, mode: str = "lecture") -> None:
+def summarize_new_part(
+    lecture: str, full_text: str, state: dict, mode: str = "lecture",
+    end_chars: int = None,
+) -> bool:
     """
     يحوّل الجزء الجديد من النص لنوتس (اللي بعد آخر نقطة اتشرحت)،
     ويضيفه كقسم جديد في ملف الـ Markdown بتاريخ اليوم.
 
+    end_chars: لو محدد، بيوقف عند الموضع ده بالظبط بدل ما ياخد لحد آخر
+    النص كله - ده بيسمح بتلخيص جزء بس من النص الجديد (مثلاً لما المستخدم
+    يحدد أجزاء معيّنة بس في "حوّل لنوتس بس")، بشرط إن الموضع ده يكون
+    بعد نقطة البداية (base_summarized_chars) عشان يفضل الترتيب التسلسلي
+    سليم (منقدرش "نقفز" ونسيب فجوة في النص من غير ما نلخصها).
+
+    بيرجع True لو كل النص المطلوب (لحد end_chars أو لحد آخر full_text لو
+    مش محدد) اتشرح بنجاح، وFalse لو وقف قبل ما يخلص.
+
+    مبدأ الحماية من فقدان الشغل (checkpointing): لو مقطع فشل بعد كل
+    محاولاته (مع كل مزوّدين ومحاولات إعادة الاتصال)، مش بنرمي استثناء
+    يمسح المقاطع اللي نجحت قبله - بنحفظهم فعليًا في الـ md ونحدّث نقطة
+    الوقوف (summarized_chars) لحد هناك بس، فلو ضغطت "لخّص" تاني، هيكمل
+    من بعد آخر نقطة نجحت، مش من الأول.
+
     mode: "lecture" (افتراضي) = أسلوب "لخص المحاضرة" التعليمي (EXPLAIN_PROMPT)،
           "meeting" = أسلوب "خد نوتس" المختصر لمحضر اجتماع (MEETING_NOTES_PROMPT).
     """
-    prompt = MEETING_NOTES_PROMPT if mode == "meeting" else EXPLAIN_PROMPT
+    prompt = MEETING_NOTES_PROMPT if mode == "meeting" else _build_explain_prompt(
+        state.get("subject", ""),
+        state.get("enable_corrections", False),
+        state.get("enable_additions", False),
+    )
 
-    new_text = full_text[state["summarized_chars"]:].strip()
+    base_summarized_chars = state["summarized_chars"]
+    text_end = len(full_text) if end_chars is None else max(base_summarized_chars, min(end_chars, len(full_text)))
+    new_text = full_text[base_summarized_chars:text_end].strip()
     if not new_text:
         _log("[i] مفيش نص جديد يتشرح.")
-        return
+        return True
 
-    # الملفات اللي هتتحسب "متشرّحة" بعد نجاح العملية دي = أي ملف اتفرغ
-    # قبل كده بس لسه مش متعلّم عليه إنه اتشرح
+    # الملفات اللي هتتحسب "متشرّحة" - بس هنعلّم عليها فعليًا في الآخر لو
+    # *كل* المقاطع نجحت، وبس لو مدى النص بتاعها بالكامل واقع جوه النطاق
+    # المطلوب شرحه (base_summarized_chars → text_end) - عشان لو المستخدم
+    # حدد جزء بس من النص (end_chars)، منعلمش على ملفات جاية بعد النطاق
+    # ده كإنها "خلصت شرحها" برضو.
+    transcript_ranges = state.get("transcript_ranges", {})
     files_about_to_be_explained = [
         fn for fn in state["transcribed_files"]
         if fn not in state["explained_files"]
+        and transcript_ranges.get(fn, [0, text_end])[1] <= text_end
     ]
 
     chunks = chunk_text(new_text)
@@ -675,24 +1155,47 @@ def summarize_new_part(lecture: str, full_text: str, state: dict, mode: str = "l
     _log(f"[i] بيحوّل الجزء الجديد لنوتس ({total} مقطع/مقاطع)...")
 
     partial_notes = []
+    processed_chars = 0
+    stopped_early = False
     for i, c in enumerate(chunks, 1):
         if _cancelled():
             _log(f"[⏹] اتلغت العملية - اتشرح {i - 1}/{total} مقطع قبل الإلغاء.")
-            if not partial_notes:
-                return
+            stopped_early = True
             break
 
         _log(f"    [i] مقطع {i}/{total} ...")
         _progress(i - 1, total, "تحويل لنوتس")
-        partial_notes.append(explain_text(c, prompt))
+        try:
+            partial_notes.append(explain_text_with_split(c, prompt))
+        except Exception as e:
+            _log(f"[!] فشل شرح المقطع {i}/{total} بعد كل المحاولات - هنوقف هنا ونحفظ اللي خلص لحد دلوقتي.")
+            _log(f"    السبب: {friendly_error(e) if isinstance(e, Exception) else e}")
+            stopped_early = True
+            break
+
+        processed_chars += len(c) + 1  # +1 تقريبي بسبب الفاصل اللي بيضيفه chunk_text بين الجمل
         _progress(i, total, "تحويل لنوتس")
+
+        if i < total:
+            time.sleep(CHUNK_PACING_SECONDS)
+
+    if not partial_notes:
+        return False  # ولا مقطع واحد نجح - مفيش حاجة نحفظها
 
     if len(partial_notes) == 1:
         final_notes = partial_notes[0]
     else:
         _log("[i] بيجمع نوتس كل المقاطع في نسخة نهائية متماسكة...")
         combined = "\n\n".join(partial_notes)
-        final_notes = explain_text(combined, prompt)
+        try:
+            final_notes = explain_text_with_split(combined, prompt)
+        except Exception as e:
+            # لو مرحلة "التوحيد النهائي" فشلت (نفسها API call كمان ممكن
+            # تتأثر بنفس الـ rate limit)، منفقدش المقاطع اللي نجحت -
+            # بنحفظهم مجمّعين من غير صقل نهائي بدل ما نضيع كل حاجة.
+            _log("[!] فشلت مرحلة توحيد الصياغة النهائية - هنحفظ النوتس زي ما هي من غير توحيد.")
+            _log(f"    السبب: {friendly_error(e) if isinstance(e, Exception) else e}")
+            final_notes = combined
 
     md_path = MARKDOWN_FOLDER / f"{lecture}.md"
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -715,12 +1218,33 @@ def summarize_new_part(lecture: str, full_text: str, state: dict, mode: str = "l
     })
     state["_undo_stack"] = undo_stack[-MAX_UNDO_STEPS:]  # حد أقصى لعدد الخطوات
     state.pop("_undo", None)  # اسم قديم لباج قديم (single-level) - بنتخلص منه
-    state["summarized_chars"] = len(full_text)
-    state["explained_files"].extend(files_about_to_be_explained)
+
+    completed_all = (len(partial_notes) == total) and not stopped_early
+    if completed_all:
+        # كل المقاطع نجحت - الـ checkpoint بيبقى نهاية النطاق المطلوب
+        # (text_end، مش بالضرورة نهاية full_text لو كان فيه end_chars
+        # محدد)، وكل الملفات المرتبطة (جوه النطاق ده بس) بيتم تعليمها
+        # كـ"متشرّحة".
+        state["summarized_chars"] = text_end
+        state["explained_files"].extend(files_about_to_be_explained)
+    else:
+        # نجاح جزئي بس - الـ checkpoint بيبقى لحد آخر مقطع نجح فعليًا
+        # (تقريبي، مبني على مجموع أطوال المقاطع الناجحة)، ومنعلمش أي
+        # ملف كـ"متشرّح" لحد ما كل النص بتاعه يخلص فعليًا - أأمن، وبيمنع
+        # حذفه بالغلط من أي عملية cleanup مستقبلية.
+        state["summarized_chars"] = base_summarized_chars + processed_chars
+
     with get_lecture_lock(lecture):
         save_state(lecture, state)
 
-    _log(f"[✓] النوتس الجديدة اتضافت في: {md_path}")
+    if completed_all:
+        _log(f"[✓] النوتس الجديدة اتضافت في: {md_path}")
+    else:
+        remaining = total - len(partial_notes)
+        _log(f"[✓] اتحفظ اللي خلص لحد دلوقتي في: {md_path}")
+        _log(f"[i] فاضل {remaining} مقطع/مقاطع - دوس زرار 'لخّص' تاني وقت ما تحب عشان تكمل، هيكمل من هنا مش من الأول.")
+
+    return completed_all
 
 
 # حد أقصى لعدد خطوات التراجع المحفوظة لكل محاضرة - عشان ملف الـ state
