@@ -37,6 +37,7 @@
 | 📝 **Multi-provider transcription** | Groq (`whisper-large-v3`) as the default, Gemini as a fallback on failure |
 | 🧠 **AI-powered summarization** | Turns raw transcripts into organized, lecturer-style notes (or structured meeting minutes), processed in chunks for long texts |
 | 🔀 **Hierarchical merging** | Partial notes are consolidated in small batches, then merged level by level with dedicated consolidation prompts for higher quality on long sessions |
+| 💬 **In-app feedback** | Rate the app and report ideas/problems from a built-in window, with offline queueing so nothing is lost |
 | 🎓 **Subject-aware notes** | Pick a field per lecture (Engineering, Medicine, Law, Business, Languages, Math & Sciences, Humanities & History, or your own) to tailor the summarization prompt, plus optional 🔧 corrections and 💬 additions callouts |
 | 🛡️ **Rate-limit resilience** | Automatic retries with backoff, request pacing, adaptive splitting of oversized chunks, and fallback between providers |
 | ➗ **Math equation rendering** | `$...$` and `$$...$$` rendered as PNG images inside the app via matplotlib mathtext |
@@ -53,6 +54,9 @@ Newest first. Every version is available on the [Releases page](../../releases).
 
 ### v1.4.0 — 2026-09-24
 
+- 💬 **In-app feedback:** a new **"قيّم البرنامج"** button next to *Models* opens a rating window where you can leave your name (optional), a 1-5 star rating, what you think of the app, what you'd like added or changed, and any problems you found. You can also choose to attach your event log to help track down bugs
+- 🛰️ **Never loses feedback:** if the server can't be reached (no internet, or the free Supabase project is paused after a quiet week), the message is saved on your computer and sent automatically the next time the app starts. No error is shown, and retries never create duplicates
+- 🪶 **Zero extra dependencies:** feedback is sent with Python's built-in `urllib` (no `supabase` package), so the app and the `.exe` don't grow
 - 🔀 **Hierarchical merge for the consolidation stage:** partial notes are now merged in small batches (max 4 chunks per call), then the batch results are merged together until a single final document remains, instead of pasting everything into one huge request. This noticeably improves note quality on long sessions (10+ chunks), where a very long input makes the model lose focus on details in the middle
 - 🧾 **Dedicated consolidation prompts:** `CONSOLIDATION_PROMPT` for lecture notes and `MEETING_CONSOLIDATION_PROMPT` for meeting minutes (which gathers each section's items from all parts under a single heading instead of repeating it per part). Previously the merge stage reused the main summarization prompt
 - 📁 **All prompts moved into a new `prompts.py`,** separating the API logic from the instruction text. Names are imported unchanged, so the rest of the code keeps working as-is
@@ -119,6 +123,8 @@ Newest first. Every version is available on the [Releases page](../../releases).
 │   ├── record_session.py      # Command-line system audio recorder (no GUI)
 │   ├── process_lecture.py     # Transcription + summarization + hierarchical merge (Groq / Gemini / NVIDIA)
 │   ├── prompts.py             # All AI prompts (lecture notes, meetings, consolidation)
+│   ├── evaluation.py          # In-app feedback window + Supabase sender with offline queue
+│   ├── feedback_setup.sql     # One-time SQL that creates the Supabase feedback table (insert-only)
 │   ├── state_manager.py       # Folder setup and shared state across scripts
 │   └── math_render.py         # Converts LaTeX to PNG images rendered in the GUI
 ├── StudyNotes.spec            # PyInstaller build config for a .exe build
@@ -215,6 +221,18 @@ python system/record_session.py
 ```bash
 python system/process_lecture.py "lecture name"
 ```
+
+---
+
+## Feedback
+
+Click **💬 قيّم البرنامج** in the main window to rate the app and tell us what to improve or what went wrong. It only needs an internet connection at that moment: if it's not available, your message is stored locally and delivered automatically later.
+
+**Running your own copy?** Feedback is stored in a [Supabase](https://supabase.com/) table. To collect it in your own project:
+
+1. Run `system/feedback_setup.sql` once in the Supabase SQL Editor. It creates the `feedback` table with Row Level Security so the public key can **insert only** (nobody can read, edit or delete rows with it).
+2. Put your project URL and **anon (public)** key in `SUPABASE_URL` / `SUPABASE_ANON_KEY` at the top of `system/evaluation.py`. Never use the `service_role` key there.
+3. While testing, set `DEBUG_SHOW_ERRORS = True` in `evaluation.py` to see why a send failed (e.g. `HTTP 401` = wrong key, `HTTP 404` = table missing).
 
 ---
 
