@@ -64,8 +64,9 @@ from state_manager import (
     audio_duration_minutes_safe,
 )
 import process_lecture
+import evaluation
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30
@@ -128,6 +129,10 @@ PALETTE = {
     "info_soft_dark": "#3a76a3",
     "accent_soft": "#7677e0",
     "accent_soft_dark": "#5f60c4",
+    # لون زرار/نافذة التقييم (Feedback) - لون مميز (برتقالي) مختلف عن باقي
+    # الأزرار عشان يبان إنه شيء منفصل عن أدوات المعالجة.
+    "feedback": "#d97706",
+    "feedback_dark": "#b45309",
 }
 
 # ألوان صناديق التمييز (blockquotes) في عارض النوتس - كل نوع من الصناديق
@@ -375,6 +380,9 @@ class StudyApp:
         # (خصوصًا نافذة إعداد أول تشغيل - المفروض تظهر فوق واجهة ظاهرة
         # بالفعل، مش قبلها).
         self.root.after(150, self._startup_checks)
+        # نبعت أي تقييمات اتحفظت محليًا قبل كده (لو السيرفر كان مش متاح) -
+        # في الخلفية ومن غير ما يظهر أي حاجة للمستخدم.
+        self.root.after(4000, evaluation.flush_pending_async)
 
     # ---------------------------------------------------------- Startup checks
     def _startup_checks(self):
@@ -596,6 +604,14 @@ class StudyApp:
         )
         settings_btn.pack(side="left", padx=(10, 0))
         _add_tooltip(settings_btn, "Manually choose the transcription model and the summarization/notes model.")
+
+        feedback_btn = self._card_button(
+            top_row2, "💬 قيّم البرنامج", self._show_feedback_dialog,
+            PALETTE["feedback"], PALETTE["feedback_dark"],
+            font=("Segoe UI", 9, "bold"), padx=10, pady=5,
+        )
+        feedback_btn.pack(side="left", padx=(8, 0))
+        _add_tooltip(feedback_btn, "Rate the app and tell us what to improve or what problems you found.")
 
         # ---------- التحكم في التسجيل ----------
         frame_controls = ttk.LabelFrame(self.root, text="⏺ التسجيل", style="Card.TLabelframe")
@@ -934,6 +950,12 @@ class StudyApp:
         self.root.after(0, update)
 
     # ---------------------------------------------------------- Model settings
+    def _show_feedback_dialog(self):
+        evaluation.show_feedback_dialog(
+            self.root, PALETTE, APP_VERSION,
+            get_log=lambda: "\n".join(self._log_plain_lines),
+        )
+
     def _show_model_settings_dialog(self):
         import first_run_setup
         win = tk.Toplevel(self.root)
