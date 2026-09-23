@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="logo.svg" alt="StudyNotes Logo" width="120" />
+<img src="logo.ico" alt="StudyNotes Logo" width="120" />
 
 # StudyNotes — Automatic Lecture Recording, Transcription & Summarization
 
