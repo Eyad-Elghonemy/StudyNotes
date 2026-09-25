@@ -19,9 +19,9 @@ import soundcard as sc
 import soundfile as sf
 from dotenv import load_dotenv
 
-load_dotenv()  # يقرأ ملف .env من نفس مجلد السكريبتات لو موجود
+from state_manager import BASE_DIR, RECORD_FOLDER, pick_lecture_name, compress_to_opus, ffmpeg_available
 
-from state_manager import RECORD_FOLDER, pick_lecture_name, compress_to_opus, ffmpeg_available
+load_dotenv(BASE_DIR / ".env")  # يقرأ ملف .env من مكان بيانات اليوزر
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30  # كل نص ساعة يتقفل الملف الحالي ويتفتح ملف جديد أوتوماتيك

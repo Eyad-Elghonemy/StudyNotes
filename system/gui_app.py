@@ -26,9 +26,10 @@ import re
 import queue
 import threading
 import time
+import traceback
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import numpy as np
 import soundcard as sc
@@ -43,9 +44,14 @@ from tkinterweb import HtmlFrame
 
 from math_render import render_math_to_html_images
 
-load_dotenv()
-
+# لازم نستورد state_manager الأول عشان يحسب BASE_DIR (مكان بيانات اليوزر:
+# AppData وقت الـ exe، أو فولدر السكريبت وقت التطوير) - وبعدين نحمّل .env
+# من جوه المكان ده بالظبط. الترتيب القديم (load_dotenv قبل الاستيراد) كان
+# لازم لأن BASE_DIR كان بيتقرا من .env نفسه؛ دلوقتي BASE_DIR مبقاش محتاج
+# .env خالص، فالترتيب اتعكس عشان .env يتحمّل من مكانه الصح من غير أي
+# مشكلة "البيضة والفرخة".
 from state_manager import (
+    BASE_DIR,
     RECORD_FOLDER,
     TRANSCRIPT_FOLDER,
     MARKDOWN_FOLDER,
@@ -63,10 +69,14 @@ from state_manager import (
     LOW_DISK_WARNING_MB,
     audio_duration_minutes_safe,
 )
+
+load_dotenv(BASE_DIR / ".env")
 import process_lecture
 import evaluation
+import updater
+import pdf_export
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30
@@ -383,6 +393,9 @@ class StudyApp:
         # نبعت أي تقييمات اتحفظت محليًا قبل كده (لو السيرفر كان مش متاح) -
         # في الخلفية ومن غير ما يظهر أي حاجة للمستخدم.
         self.root.after(4000, evaluation.flush_pending_async)
+        # فحص هادي عن تحديث جديد في الخلفية - لو مفيش تحديث، مفيش أي حاجة
+        # هتظهر لليوزر خالص. لو فيه، هيظهرله بوكس بسيط يسأله يوافق ولا لأ.
+        self.root.after(2500, lambda: self._check_for_update(manual=False))
 
     # ---------------------------------------------------------- Startup checks
     def _startup_checks(self):
@@ -410,6 +423,113 @@ class StudyApp:
                 "مقدرش ألاقي جهاز إخراج صوت افتراضي على الجهاز ده. التسجيل "
                 "مش هيشتغل صح لحد ما يبقى فيه جهاز صوت متوصل ومفعّل.",
             )
+
+    # ---------------------------------------------------------- Auto-update
+    def _check_for_update(self, manual: bool):
+        """
+        بيشيك في ثريد منفصل (عشان الواجهة متجمّدش وقت الاتصال بالنت)،
+        وبيرجع النتيجة للواجهة الرئيسية بأمان عن طريق self.root.after.
+
+        manual=True (اليوزر دوس زرار Check Update بنفسه): لو مفيش تحديث،
+        بنقوله صراحة "إنت شغال بآخر نسخة".
+        manual=False (فحص تلقائي وقت الفتح): لو مفيش تحديث، مفيش أي حاجة
+        هتظهر خالص - عشان مانزعجش اليوزر كل مرة يفتح البرنامج فيها.
+        """
+        if manual:
+            self._log("🔄 بيشيك على وجود تحديث جديد...")
+
+        def worker():
+            info = updater.check_for_update(APP_VERSION)
+            self.root.after(0, lambda: self._on_update_check_done(info, manual))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _mark_update_available(self, available: bool):
+        """لو فيه نسخة أحدث: الاسم يتغير لـ "تحديث جديد متاح" (نفس اللون)."""
+        btn = getattr(self, "update_btn", None)
+        if btn is None:
+            return
+        btn.config(text="🔔 تحديث جديد متاح" if available else "🔄 التحقق من التحديث")
+
+    def _on_update_check_done(self, info: dict | None, manual: bool):
+        self._mark_update_available(info is not None)
+        if info is None:
+            if manual:
+                self._log(f"✓ إنت شغال بآخر نسخة (v{APP_VERSION}).")
+                show_info("Check Update", f"You're up to date.\nStudyNotes v{APP_VERSION} is the latest version.")
+            return
+
+        new_version = info["version"]
+        self._log(f"🎉 فيه نسخة جديدة متاحة: v{new_version} (إنت شغال بـ v{APP_VERSION})")
+
+        notes = info.get("notes") or ""
+        notes_preview = f"\n\nWhat's new:\n{notes[:300]}" if notes else ""
+        agreed = ask_yesno(
+            "Update Available",
+            f"A new version of StudyNotes is available: v{new_version}\n"
+            f"You're currently on v{APP_VERSION}."
+            f"{notes_preview}\n\nWould you like to update now? "
+            "(It will download and install automatically - no action needed from you.)",
+        )
+        if agreed:
+            self._download_and_install_update(info["download_url"], new_version)
+
+    def _download_and_install_update(self, download_url: str, new_version: str):
+        """
+        بتنزّل ملف التثبيت في الخلفية مع عرض تقدّم بسيط، وبعد ما يخلص
+        التنزيل بتقفل البرنامج الحالي وتشغّل التثبيت الصامت - البرنامج
+        هيفتح تاني لوحده بعد ما التثبيت يخلص (لو ملف الـ Setup متظبط
+        على كده في إعداداته - هنتأكد من النقطة دي وقت عمل ملف الـ Inno
+        Setup نفسه).
+        """
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("Downloading Update...")
+        progress_win.geometry("380x120")
+        progress_win.configure(bg=PALETTE["bg"])
+        progress_win.transient(self.root)
+        progress_win.resizable(False, False)
+        progress_win.protocol("WM_DELETE_WINDOW", lambda: None)  # منع قفلها يدوي أثناء التحميل
+
+        label = tk.Label(
+            progress_win, text=f"Downloading version {new_version}...",
+            bg=PALETTE["bg"], fg=PALETTE["text"], font=("Segoe UI", 10),
+        )
+        label.pack(pady=(18, 8))
+        bar = ttk.Progressbar(progress_win, length=320, mode="determinate", maximum=100)
+        bar.pack(pady=4)
+
+        def on_progress(pct: int):
+            self.root.after(0, lambda: bar.config(value=pct))
+
+        def worker():
+            try:
+                installer_path = updater.download_installer(download_url, on_progress=on_progress)
+            except Exception as e:
+                self.root.after(0, lambda: self._on_update_download_failed(progress_win, e))
+                return
+            self.root.after(0, lambda: self._on_update_downloaded(progress_win, installer_path))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_download_failed(self, progress_win: tk.Toplevel, error: Exception):
+        progress_win.destroy()
+        self._log(f"⚠ فشل تحميل التحديث: {error}")
+        show_error(
+            "Download Failed",
+            f"Couldn't download the update. Please check your internet connection and try again.\n\nDetails: {error}",
+        )
+
+    def _on_update_downloaded(self, progress_win: tk.Toplevel, installer_path):
+        progress_win.destroy()
+        self._log("✓ اتحمّل التحديث - جاري التثبيت وإعادة فتح البرنامج...")
+        try:
+            updater.launch_silent_installer(installer_path)
+        except Exception as e:
+            show_error("Installation Failed", f"Couldn't launch the installer.\n\nDetails: {e}")
+            return
+        # نقفل البرنامج الحالي على طول عشان ملفاته تبقى حرة للتثبيت
+        # الجديد يكتب عليها من غير أي تعارض.
+        self.root.destroy()
 
     def _on_first_run_setup_done(
         self, gemini_saved, groq_saved, gemini_rejected, groq_rejected,
@@ -613,6 +733,19 @@ class StudyApp:
         feedback_btn.pack(side="left", padx=(8, 0))
         _add_tooltip(feedback_btn, "Rate the app and tell us what to improve or what problems you found.")
 
+        self.update_btn = self._card_button(
+            top_row2, "🔄 التحقق من التحديث", lambda: self._check_for_update(manual=True),
+            PALETTE["info"], PALETTE["info_dark"],
+            font=("Segoe UI", 9, "bold"), padx=10, pady=5,
+        )
+        self.update_btn.pack(side="left", padx=(8, 0))
+        _add_tooltip(self.update_btn, "يشيك هل فيه نسخة أحدث من StudyNotes على GitHub.")
+
+        ttk.Label(
+            top_row2, text=f"v{APP_VERSION}", foreground=PALETTE["text_muted"],
+            background=PALETTE["card"], font=("Segoe UI", 8),
+        ).pack(side="left", padx=(6, 0))
+
         # ---------- التحكم في التسجيل ----------
         frame_controls = ttk.LabelFrame(self.root, text="⏺ التسجيل", style="Card.TLabelframe")
         frame_controls.pack(fill="x", **pad)
@@ -651,7 +784,7 @@ class StudyApp:
 
         # ---------- أجزاء التسجيل ----------
         frame_chunks = ttk.LabelFrame(self.root, text="🎧 أجزاء التسجيل", style="Card.TLabelframe")
-        frame_chunks.pack(fill="both", expand=True, **pad)
+        frame_chunks.pack(fill="x", **pad)
 
         chunk_toolbar = ttk.Frame(frame_chunks, style="Card.TFrame")
         chunk_toolbar.pack(fill="x", padx=8, pady=6)
@@ -684,10 +817,10 @@ class StudyApp:
         self.selection_total_label.pack(side="left", padx=6)
 
         chunks_container = ttk.Frame(frame_chunks, style="Card.TFrame")
-        chunks_container.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        chunks_container.pack(fill="x", padx=8, pady=(0, 6))
 
         self._chunks_canvas = tk.Canvas(
-            chunks_container, height=130, highlightthickness=0, bg=PALETTE["card"],
+            chunks_container, height=70, highlightthickness=0, bg=PALETTE["card"],
         )
         chunks_vsb = ttk.Scrollbar(chunks_container, orient="vertical", command=self._chunks_canvas.yview)
         self._chunks_inner = ttk.Frame(self._chunks_canvas, style="Card.TFrame")
@@ -703,115 +836,113 @@ class StudyApp:
         frame_process = ttk.LabelFrame(self.root, text="📝 التفريغ والنوتس", style="Card.TLabelframe")
         frame_process.pack(fill="x", **pad)
 
-        # الزرار الأهم بقى زرارين - كل واحد بياخد أسلوب مخرجات مختلف تمامًا
-        # (راجع EXPLAIN_PROMPT مقابل MEETING_NOTES_PROMPT في process_lecture.py):
-        # الأول لأسلوب "شرح محاضرة تعليمي" والتاني لأسلوب "محضر اجتماع مختصر".
-        row_primary = ttk.Frame(frame_process, style="Card.TFrame")
-        row_primary.pack(fill="x", padx=10, pady=(6, 3))
-        row_primary.columnconfigure(0, weight=1)
-        row_primary.columnconfigure(1, weight=1)
+        # التصميم: مجموعتين واضحتين بإطار ملوّن - محاضرة (أخضر، يمين) واجتماع
+        # (أزرق، شمال). جوه كل مجموعة: زرار كبير للعملية الكاملة (تفريغ + نوتس)
+        # وزرار أصغر للنوتس بس من تفريغ موجود. اللون ثابت للنوع في كل الأزرار.
+        row_groups = ttk.Frame(frame_process, style="Card.TFrame")
+        row_groups.pack(fill="x", padx=10, pady=(6, 4))
+        row_groups.columnconfigure(0, weight=3, uniform="grp")
+        row_groups.columnconfigure(1, weight=1, uniform="grp")
+        row_groups.columnconfigure(2, weight=3, uniform="grp")
 
-        self.btn_primary_lecture = self._card_button(
-            row_primary, "🎓  فرّغ + لخص المحاضرة",
+        def _make_group(col, color, color_dark, color_soft, color_soft_dark,
+                        title, big_text, big_cmd, big_tip, small_text, small_cmd, small_tip,
+                        padx):
+            box = tk.Frame(
+                row_groups, bg=PALETTE["card"],
+                highlightthickness=2, highlightbackground=color, highlightcolor=color,
+            )
+            box.grid(row=0, column=col, sticky="nsew", padx=padx)
+            tk.Label(
+                box, text=title, bg=PALETTE["card"], fg=color,
+                font=("Segoe UI", 10, "bold"), anchor="e",
+            ).pack(fill="x", padx=8, pady=(4, 2))
+            big = self._card_button(
+                box, big_text, big_cmd, color, color_dark,
+                font=("Segoe UI", 11, "bold"), pady=10,
+            )
+            big.pack(fill="x", padx=6, pady=(0, 4))
+            _add_tooltip(big, big_tip)
+            small = self._card_button(
+                box, small_text, small_cmd, color_soft, color_soft_dark,
+                font=("Segoe UI", 9, "bold"), padx=8, pady=6,
+            )
+            small.pack(fill="x", padx=6, pady=(0, 6))
+            _add_tooltip(small, small_tip)
+            return big, small
+
+        self.btn_primary_lecture, btn_notes_only = _make_group(
+            2, PALETTE["success"], PALETTE["success_dark"],
+            PALETTE["success_soft"], PALETTE["success_soft_dark"],
+            "🎓  محاضرة",
+            "فرّغ + اشرح المحاضرة",
             lambda: self._start_processing(True, mode="lecture"),
-            PALETTE["success"], PALETTE["success_dark"],
-            font=("Segoe UI", 11, "bold"),
-        )
-        self.btn_primary_lecture.grid(row=0, column=1, sticky="ew", padx=(4, 0))
-        _add_tooltip(
-            self.btn_primary_lecture,
             "Transcribe the selected chunks and turn them into organized lecture-style notes "
             "(headings, detail, full highlight boxes).",
+            "اشرح المحاضرة (من التفريغ)",
+            lambda: self._start_notes_only(mode="lecture"),
+            "Turn the existing transcript into lecture-style notes, without transcribing new audio.",
+            (4, 0),
         )
 
-        self.btn_primary_meeting = self._card_button(
-            row_primary, "🤝  فرّغ + خد نوتس",
+        self.btn_primary_meeting, btn_notes_only_meeting = _make_group(
+            0, PALETTE["info"], PALETTE["info_dark"],
+            PALETTE["info_soft"], PALETTE["info_soft_dark"],
+            "🤝  اجتماع",
+            "فرّغ + لخّص الاجتماع",
             lambda: self._start_processing(True, mode="meeting"),
-            PALETTE["info"], PALETTE["info_dark"],
-            font=("Segoe UI", 11, "bold"),
-        )
-        self.btn_primary_meeting.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        _add_tooltip(
-            self.btn_primary_meeting,
             "Transcribe the selected chunks and turn them into a short meeting summary "
             "(recap, decisions, action items, dates) instead of a detailed lecture explanation.",
+            "لخّص الاجتماع (من التفريغ)",
+            lambda: self._start_notes_only(mode="meeting"),
+            "Turn the existing transcript into a short meeting summary, without transcribing new audio.",
+            (0, 4),
         )
 
-        # صف ثانوي: أفعال معالجة بديلة أقل استخداماً (تفريغ لوحده / نوتس
-        # من نص موجود بالفعل) - التلاتة دلوقتي في صف واحد وبنفس لون العائلة
-        # الهادئة (accent_soft) عشان يبانوا كمجموعة واحدة متناسقة، مختلفة
-        # بصريًا عن زرارين الأهمية القصوى فوقهم.
-        row_secondary = ttk.Frame(frame_process, style="Card.TFrame")
-        row_secondary.pack(fill="x", padx=10, pady=4)
-        row_secondary.columnconfigure(0, weight=1)
-        row_secondary.columnconfigure(1, weight=1)
-        row_secondary.columnconfigure(2, weight=1)
-
+        # تفريغ فقط: رمادي محايد في العمود اللي في النص لأنه بيخدم النوعين
+        # (محاضرة واجتماع) - وكمان بيوفّر صف كامل من المساحة الرأسية.
         btn_transcribe = self._card_button(
-            row_secondary, "✍  فرّغ فقط",
+            row_groups, "🎙\nفرّغ فقط",
             lambda: self._start_processing(False),
-            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
-            font=("Segoe UI", 9, "bold"),
-            relief="ridge", bd=2, padx=8, pady=6,
+            PALETTE["neutral_bg"], "#4d4d4d",
+            font=("Segoe UI", 10, "bold"), padx=6, pady=6,
         )
-        btn_transcribe.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        btn_transcribe.grid(row=0, column=1, sticky="nsew", padx=4)
         _add_tooltip(btn_transcribe, "Transcribe the selected chunks to raw text only, without generating notes.")
 
-        btn_notes_only = self._card_button(
-            row_secondary, "🎓  لخص فقط",
-            lambda: self._start_notes_only(mode="lecture"),
-            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
-            font=("Segoe UI", 9, "bold"),
-            relief="ridge", bd=2, padx=8, pady=6,
-        )
-        btn_notes_only.grid(row=0, column=1, sticky="ew", padx=3)
-        _add_tooltip(btn_notes_only, "Turn the existing transcript into lecture-style notes, without transcribing new audio.")
+        ttk.Separator(frame_process, orient="horizontal").pack(fill="x", padx=10, pady=4)
 
-        btn_notes_only_meeting = self._card_button(
-            row_secondary, "🤝  حوّل لنوتس بس",
-            lambda: self._start_notes_only(mode="meeting"),
-            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
-            font=("Segoe UI", 9, "bold"),
-            relief="ridge", bd=2, padx=8, pady=6,
-        )
-        btn_notes_only_meeting.grid(row=0, column=2, sticky="ew", padx=(3, 0))
-        _add_tooltip(btn_notes_only_meeting, "Turn the existing transcript into a short meeting summary, without transcribing new audio.")
-
-        # صف عرض النتيجة (Tier 3): أهم من زراير المسح/التراجع تحته، بس
-        # أقل من زراير المعالجة فوقه - ألوان أهدأ برضه (soft) للتفرقة.
+        # صف النتايج: لون رمادي هادي موحّد عشان ميتلخبطش مع أزرار المعالجة الملونة.
         default_app_name = _get_default_app_name(".md")
+        GRAY, GRAY_DARK = "#8a8f98", PALETTE["text_muted"]
 
         row_view_notes = ttk.Frame(frame_process, style="Card.TFrame")
         row_view_notes.pack(fill="x", padx=10, pady=(2, 4))
-        row_view_notes.columnconfigure(0, weight=1)
-        row_view_notes.columnconfigure(1, weight=1)
-        row_view_notes.columnconfigure(2, weight=1)
+        for i in range(4):
+            row_view_notes.columnconfigure(i, weight=1, uniform="res")
 
-        btn_view_notes = self._card_button(
-            row_view_notes, "📄  عرض النوتس هنا", self._show_notes_viewer,
-            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
-        )
-        btn_view_notes.grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        _add_tooltip(btn_view_notes, "Open a preview window for the notes (with equations rendered) inside the app.")
+        def _result_btn(col, text, cmd, tip, padx):
+            b = self._card_button(
+                row_view_notes, text, cmd, GRAY, GRAY_DARK,
+                font=("Segoe UI", 9, "bold"), padx=6, pady=7,
+            )
+            b.grid(row=0, column=col, sticky="ew", padx=padx)
+            _add_tooltip(b, tip)
+            return b
 
-        btn_view_transcript = self._card_button(
-            row_view_notes, "📃  عرض التفريغ هنا", self._show_transcript_viewer,
-            PALETTE["accent_soft"], PALETTE["accent_soft_dark"],
-        )
-        btn_view_transcript.grid(row=0, column=1, sticky="ew", padx=3)
-        _add_tooltip(btn_view_transcript, "Open a preview window for the raw transcript text, with a one-click copy button.")
-
-        btn_open_md = self._card_button(
-            row_view_notes, f"📂  افتح في {default_app_name}", self._open_markdown_file,
-            PALETTE["info_soft"], PALETTE["info_soft_dark"],
-        )
-        btn_open_md.grid(row=0, column=2, sticky="ew", padx=(3, 0))
-        _add_tooltip(btn_open_md, f"Open the Markdown file with your system's default app ({default_app_name}).")
+        _result_btn(3, "📄  عرض النوتس هنا", self._show_notes_viewer,
+                    "Open a preview window for the notes (with equations rendered) inside the app.", (3, 0))
+        _result_btn(2, "📃  عرض التفريغ هنا", self._show_transcript_viewer,
+                    "Open a preview window for the raw transcript text, with a one-click copy button.", 3)
+        _result_btn(1, f"📂  افتح في {default_app_name}", self._open_markdown_file,
+                    f"Open the Markdown file with your system's default app ({default_app_name}).", 3)
+        _result_btn(0, "📑  احفظ النوتس PDF", self._export_notes_pdf,
+                    "Save the notes as a PDF file (same look as the in-app preview, Arabic RTL supported).", (0, 3))
 
         # صف المسح والتراجع: زرار المسح الانتقائي على الشمال، وزرار
         # التراجع عن آخر تحديث اتنقل لليمين.
         row_undo = ttk.Frame(frame_process, style="Card.TFrame")
-        row_undo.pack(fill="x", padx=10, pady=(2, 2))
+        row_undo.pack(fill="x", padx=10, pady=(2, 6))
 
         btn_delete = tk.Button(
             row_undo,
@@ -843,20 +974,17 @@ class StudyApp:
         btn_undo.bind("<Leave>", lambda e: btn_undo.config(bg=PALETTE["warning_bg"]))
         _add_tooltip(btn_undo, "Undo the last update: remove the last notes section added, and set its related chunks back to \"transcribed\".")
 
-        row_progress = ttk.Frame(frame_process, style="Card.TFrame")
-        row_progress.pack(fill="x", padx=10, pady=(2, 6))
-
-        # عرض ثابت ومعقول بدل ما يمتد على عرض الكارت/الشاشة كله
-        self.progress_label = ttk.Label(row_progress, text="", style="Muted.TLabel")
+        # الـ progress بقى في نفس صف المسح/التراجع (توفير مساحة رأسية للسجل)
+        self.progress_label = ttk.Label(row_undo, text="", style="Muted.TLabel")
         self.progress_label.pack(side="right", padx=(8, 0))
         self.progress_bar = ttk.Progressbar(
-            row_progress, mode="determinate",
+            row_undo, mode="determinate",
             style="App.Horizontal.TProgressbar", length=260,
         )
         self.progress_bar.pack(side="right")
 
         self.btn_cancel_processing = self._outline_button(
-            row_progress, "🛑 إلغاء", self._cancel_processing, PALETTE["danger"],
+            row_undo, "🛑 إلغاء", self._cancel_processing, PALETTE["danger"],
             padx=8, pady=3,
         )
         # مخفي طول ما مفيش عملية شغالة - بيظهر بس وقت التفريغ/التلخيص
@@ -876,8 +1004,8 @@ class StudyApp:
         _add_tooltip(btn_copy_log, "نسخ سجل الأحداث كامل (كنص سليم) للـ clipboard")
 
         self.log_box = scrolledtext.ScrolledText(
-            frame_log, height=8, state="disabled", wrap="word",
-            font=("Segoe UI", 10), bg=PALETTE["card"], fg=PALETTE["text"],
+            frame_log, height=6, state="disabled", wrap="word",
+            font=("Segoe UI", 11), bg=PALETTE["card"], fg=PALETTE["text"],
             relief="flat", padx=8, pady=6,
         )
         self.log_box.tag_configure("rtl_line", justify="right")
@@ -2512,6 +2640,12 @@ class StudyApp:
         btn_refresh.pack(side="left")
         _add_tooltip(btn_refresh, "إعادة تحميل النوتس (لو اتحدثت وانت فاتح النافذة دي)")
 
+        btn_pdf_v = self._outline_button(
+            toolbar, "📑 PDF", lambda: self._export_notes_pdf(win), PALETTE["info"]
+        )
+        btn_pdf_v.pack(side="left", padx=(6, 0))
+        _add_tooltip(btn_pdf_v, "حفظ النوتس كملف PDF")
+
         search_var = tk.StringVar()
         search_entry = ttk.Entry(toolbar, textvariable=search_var, width=24, justify="right")
 
@@ -2542,14 +2676,14 @@ class StudyApp:
         html_frame.pack(fill="both", expand=True)
         self._render_notes_into(html_frame, lecture)
 
-    def _render_notes_into(self, html_frame, lecture: str):
-        """يعيد قراءة ملف النوتس من الديسك ويحمّله في الـ html_frame -
-        منفصلة عن _show_notes_viewer عشان زرار التحديث يقدر يستدعيها من
-        غير ما يفتح نافذة جديدة."""
+    def _build_notes_html(self, lecture: str, for_pdf: bool = False):
+        """يقرأ ملف النوتس من الديسك ويرجّع صفحة HTML كاملة (أو None لو الملف
+        مش موجود). for_pdf=True بيضيف تظبيطات الطباعة (ألوان الخلفية، تقطيع
+        الصفحات، الكود يلف بدل ما يتقطع)."""
         md_path = MARKDOWN_FOLDER / f"{lecture}.md"
         if not md_path.exists():
             show_info("تنبيه", "مفيش ملف نوتس لسه لهذه المحاضرة.")
-            return
+            return None
         with open(md_path, "r", encoding="utf-8") as f:
             content = f.read()
 
@@ -2571,6 +2705,20 @@ class StudyApp:
         # تلوين الكود (syntax highlighting) حقيقي عن طريق Pygments بستايل
         # غامق قريب من VS Code Dark، بدل الخلفية الرمادية البسيطة القديمة.
         pygments_css = HtmlFormatter(style="monokai").get_style_defs(".codehilite")
+
+        extra_css = ""
+        if for_pdf:
+            # المتصفح بيشيل ألوان الخلفية وقت الطباعة افتراضيًا - من غير السطر
+            # ده صناديق الكود الغامقة بتطلع بيضا والكلام اللي فيها مبيبانش.
+            extra_css = """
+@page { size: A4; margin: 14mm; }
+* { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body { padding: 0; font-size: 13.5px; }
+img { max-width: 100%; }
+div.codehilite pre { white-space: pre-wrap; word-wrap: break-word; overflow: visible; }
+blockquote, table, tr, div.codehilite, img { break-inside: avoid; page-break-inside: avoid; }
+h1, h2, h3 { break-after: avoid; page-break-after: avoid; }
+"""
 
         html = f"""<html dir="rtl" lang="ar">
 <head><meta charset="utf-8">
@@ -2597,13 +2745,118 @@ blockquote {{ direction: rtl; text-align: right; background: #f8f4e3; border-rig
 {pygments_css}
 table {{ direction: rtl; border-collapse: collapse; width: 100%; margin: 12px 0; }}
 td, th {{ border: 1px solid #ccc; padding: 6px 10px; text-align: right; }}
+{extra_css}
 </style></head>
 <body>{body}</body></html>"""
+        return html
 
-        try:
-            html_frame.load_html(html)
-        except Exception as e:
-            show_error("خطأ", f"مقدرش أعرض النوتس: {e}")
+    def _render_notes_into(self, html_frame, lecture: str):
+        """يجهّز صفحة النوتس (Markdown + المعادلات) في ثريد خلفي وبعدين يحمّلها
+        في الـ html_frame. قبل كده كان الشغل ده بيتنفذ على ثريد الواجهة نفسه،
+        فالنافذة كانت بتفضل بيضا وبتهنّج لو النوتس طويلة أو فيها معادلات كتير.
+        وأي خطأ بيظهر في رسالة (وفي السجل) بدل ما النافذة تفضل فاضية."""
+        md_path = MARKDOWN_FOLDER / f"{lecture}.md"
+        if not md_path.exists():
+            show_info("تنبيه", "مفيش ملف نوتس لسه لهذه المحاضرة.")
+            return
+        if getattr(html_frame, "_rendering", False):
+            return
+        html_frame._rendering = True
+
+        loading = tk.Label(
+            html_frame.master, text="⏳ جاري تجهيز النوتس...",
+            bg=PALETTE["bg"], fg=PALETTE["text_muted"], font=("Segoe UI", 11),
+        )
+        loading.place(relx=0.5, rely=0.5, anchor="center")
+
+        def done(html, err):
+            html_frame._rendering = False
+            try:
+                loading.destroy()
+            except Exception:
+                pass
+            if err:
+                self._log(f"⚠ فشل تجهيز النوتس:\n{err}")
+                show_error("خطأ", f"مقدرش أجهّز النوتس:\n{err.strip().splitlines()[-1]}")
+                return
+            try:
+                if html_frame.winfo_exists():
+                    html_frame.load_html(html)
+            except Exception as e:
+                self._log(f"⚠ فشل عرض النوتس: {e}")
+                show_error("خطأ", f"مقدرش أعرض النوتس: {e}")
+
+        def worker():
+            html, err = None, None
+            try:
+                html = self._build_notes_html(lecture)
+            except Exception:
+                err = traceback.format_exc()
+            self.root.after(0, lambda: done(html, err))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _export_notes_pdf(self, parent=None):
+        """يحوّل نوتس المحاضرة الحالية لملف PDF (عن طريق Edge/Chrome الموجود
+        على الجهاز) ويسيب اليوزر يختار يحفظه فين."""
+        if getattr(self, "_pdf_busy", False):
+            show_info("تنبيه", "التحويل لـ PDF شغال دلوقتي، استنى لحد ما يخلص.")
+            return
+        lecture = self.current_lecture
+        md_path = MARKDOWN_FOLDER / f"{lecture}.md" if lecture else None
+        if not lecture or not md_path.exists():
+            show_info("تنبيه", "مفيش ملف نوتس لسه لهذه المحاضرة.")
+            return
+
+        browser = pdf_export.find_browser()
+        if browser is None:
+            show_error(
+                "خطأ",
+                "التحويل لـ PDF محتاج Microsoft Edge أو Google Chrome على الجهاز، "
+                "ومش لاقي أي واحد منهم.",
+            )
+            return
+
+        safe_name = re.sub(r'[\\/:*?"<>|]', "_", lecture)
+        pdf_path = filedialog.asksaveasfilename(
+            parent=parent or self.root,
+            title="احفظ النوتس كملف PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=f"{safe_name}.pdf",
+        )
+        if not pdf_path:
+            return
+
+        html = self._build_notes_html(lecture, for_pdf=True)
+        if html is None:
+            return
+
+        self._pdf_busy = True
+        self._log("⏳ جاري تحويل النوتس لـ PDF...")
+
+        def worker():
+            try:
+                pdf_export.html_to_pdf(html, pdf_path, browser=browser)
+            except Exception as e:
+                self.root.after(0, lambda err=e: self._on_pdf_export_done(None, err))
+            else:
+                self.root.after(0, lambda: self._on_pdf_export_done(pdf_path, None))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_pdf_export_done(self, pdf_path, error):
+        self._pdf_busy = False
+        if error is not None:
+            self._log(f"⚠ فشل تحويل الـ PDF: {error}")
+            show_error("خطأ", f"معرفتش أحوّل النوتس لـ PDF:\n{error}")
+            return
+        self._log(f"✅ اتحفظ ملف الـ PDF: {pdf_path}")
+        if ask_yesno("تم", "ملف الـ PDF اتعمل بنجاح. تحب تفتحه دلوقتي؟"):
+            try:
+                os.startfile(str(pdf_path))
+            except Exception as e:
+                show_error("خطأ", f"مقدرش أفتح الملف: {e}")
 
     # ---------------------------------------------------------- Cleanup
     def _on_close(self):

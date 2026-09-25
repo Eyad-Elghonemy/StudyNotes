@@ -17,17 +17,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
 
-# لازم load_dotenv() تتنفذ قبل ما نعمل import لـ state_manager - لأن
-# state_manager.py بيحسب مسار المجلدات (BASE_DIR) فورًا لحظة الـ import
-# نفسه (كود على مستوى الملف)، ولو .env لسه ما اتقرأش وقتها، STUDYNOTES_DIR
-# مش هيكون موجود في os.environ، فالمسار هيرجع غلط لمجلد السكريبت نفسه
-# (system/) بدل المسار الصح من .env. الترتيب القديم (state_manager قبل
-# load_dotenv) كان بيسبب إنشاء المجلدات (Markdown, Transcript,
-# Sound_Recorded, .state) جوه مجلد system/ غلط لما الملف ده يتشغّل لوحده
-# (مش عن طريق gui_app.py اللي ترتيبه كان صح أصلاً).
-load_dotenv()
-
+# نستورد state_manager الأول عشان يحسب BASE_DIR (مكان بيانات اليوزر) -
+# مبقاش محتاج .env خالص عشان يحسبه (راجع الشرح في state_manager.py) -
+# وبعدين نحمّل .env من جوه المكان ده بالظبط.
 from state_manager import (
+    BASE_DIR,
     TRANSCRIPT_FOLDER,
     MARKDOWN_FOLDER,
     load_state,
@@ -36,6 +30,8 @@ from state_manager import (
     get_lecture_lock,
     audio_duration_minutes_safe,
 )
+
+load_dotenv(BASE_DIR / ".env")
 
 _log_callback = print
 _progress_callback = None

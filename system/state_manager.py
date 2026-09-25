@@ -12,21 +12,70 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
-# المسار الأساسي للمشروع: قابل للتخصيص عن طريق متغير بيئة STUDYNOTES_DIR
-# (تقدر تحطه في ملف .env)، ولو مش موجود بيستخدم فولدر جنب السكريبتات نفسها
-# عشان المشروع يشتغل من غير ما تعدل أي مسار يدوياً على أي جهاز.
-BASE_DIR = Path(os.environ.get("STUDYNOTES_DIR", Path(__file__).resolve().parent))
-RECORD_FOLDER = BASE_DIR / "Sound_Recorded"
-TRANSCRIPT_FOLDER = BASE_DIR / "Transcript"
-MARKDOWN_FOLDER = BASE_DIR / "Markdown"
-STATE_FOLDER = BASE_DIR / ".state"
+# مكان الكود ومكان البيانات (اتنين منفصلين):
+#
+# - BASE_DIR: مكان ملف .env (مفاتيح الـ API). وقت التطوير = فولدر الكود نفسه.
+# - DATA_DIR: مكان فولدرات البيانات (Sound_Recorded / Transcript / Markdown /
+#   .state). بيتحدد بالترتيب ده:
+#     1) متغيّر بيئة STUDYNOTES_DIR على مستوى ويندوز (لو متظبط).
+#     2) لو شغال كـ .exe مجمّع: AppData\Local\StudyNotes (بعيد عن Program Files
+#        عشان الكتابة تشتغل من غير صلاحيات Admin).
+#     3) سطر STUDYNOTES_DIR=... جوه ملف .env جنب الكود (وقت التطوير) - ده اللي
+#        بيخلّي البيانات تتحط في فولدر برّه فولدر الكود، وتتعمل تلقائي لو مش موجودة.
+#     4) لو مفيش أي حاجة من دول: فولدر الكود نفسه (زي الأول).
+def _studynotes_dir_from_dotenv(env_file: Path) -> Path | None:
+    """يقرأ سطر STUDYNOTES_DIR من ملف .env بشكل يدوي بسيط (من غير أي مكتبة)،
+    لأن .env نفسه لسه متحمّلش وقت حساب المسارات هنا."""
+    try:
+        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() == "STUDYNOTES_DIR":
+                value = value.strip().strip('"').strip("'").strip()
+                return Path(os.path.expandvars(value)).expanduser() if value else None
+    except OSError:
+        pass
+    return None
 
-for folder in (RECORD_FOLDER, TRANSCRIPT_FOLDER, MARKDOWN_FOLDER, STATE_FOLDER):
-    folder.mkdir(parents=True, exist_ok=True)
+
+_CODE_DIR = Path(__file__).resolve().parent
+
+if os.environ.get("STUDYNOTES_DIR"):
+    BASE_DIR = Path(os.environ["STUDYNOTES_DIR"])
+    DATA_DIR = BASE_DIR
+elif getattr(sys, "frozen", False):
+    BASE_DIR = Path(os.environ["LOCALAPPDATA"]) / "StudyNotes"
+    DATA_DIR = BASE_DIR
+else:
+    BASE_DIR = _CODE_DIR
+    DATA_DIR = _studynotes_dir_from_dotenv(_CODE_DIR / ".env") or BASE_DIR
+
+RECORD_FOLDER = DATA_DIR / "Sound_Recorded"
+TRANSCRIPT_FOLDER = DATA_DIR / "Transcript"
+MARKDOWN_FOLDER = DATA_DIR / "Markdown"
+STATE_FOLDER = DATA_DIR / ".state"
+
+try:
+    for folder in (RECORD_FOLDER, TRANSCRIPT_FOLDER, MARKDOWN_FOLDER, STATE_FOLDER):
+        folder.mkdir(parents=True, exist_ok=True)
+except OSError as _e:
+    # مثلاً الدرايف المحدد (D:) مش موجود دلوقتي - نرجع لفولدر الكود بدل ما
+    # البرنامج يقع خالص، ونطبع تحذير واضح.
+    print(f"[!] مقدرتش أستخدم فولدر البيانات {DATA_DIR} ({_e}). هستخدم فولدر الكود بدله.")
+    DATA_DIR = BASE_DIR = _CODE_DIR
+    RECORD_FOLDER = DATA_DIR / "Sound_Recorded"
+    TRANSCRIPT_FOLDER = DATA_DIR / "Transcript"
+    MARKDOWN_FOLDER = DATA_DIR / "Markdown"
+    STATE_FOLDER = DATA_DIR / ".state"
+    for folder in (RECORD_FOLDER, TRANSCRIPT_FOLDER, MARKDOWN_FOLDER, STATE_FOLDER):
+        folder.mkdir(parents=True, exist_ok=True)
 
 
 def safe_name(name: str) -> str:
@@ -115,8 +164,33 @@ def pick_lecture_name() -> str:
     return safe_name(new_name)
 
 
+# مسار ffmpeg المكتشف فعليًا (سواء المضموم جوه البرنامج أو من PATH العام)،
+# بيتحسب مرة واحدة بس وبيتخزّن هنا عشان مانكررش البحث كل مرة.
+_FFMPEG_CMD: str | None = None
+
+
+def _bundled_ffmpeg_path() -> Path | None:
+    """لو البرنامج شغال كـ .exe مجمّع، PyInstaller بيحط أي binaries
+    (زي ffmpeg.exe) جوه فولدر _internal جنب الـ exe نفسه - هنا بندوّر
+    عليه هناك الأول قبل PATH العام."""
+    if not getattr(sys, "frozen", False):
+        return None
+    candidate = Path(sys.executable).resolve().parent / "_internal" / "ffmpeg.exe"
+    return candidate if candidate.exists() else None
+
+
 def ffmpeg_available() -> bool:
-    return shutil.which("ffmpeg") is not None
+    global _FFMPEG_CMD
+    if _FFMPEG_CMD:
+        return True
+    bundled = _bundled_ffmpeg_path()
+    if bundled:
+        _FFMPEG_CMD = str(bundled)
+        return True
+    if shutil.which("ffmpeg") is not None:
+        _FFMPEG_CMD = "ffmpeg"
+        return True
+    return False
 
 
 # الحد الأدنى للمساحة الفاضية قبل ما نحذر المستخدم قبل بدء التسجيل (بالميجا).
@@ -151,7 +225,7 @@ def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
     try:
         subprocess.run(
             [
-                "ffmpeg", "-y", "-i", str(src_path),
+                _FFMPEG_CMD or "ffmpeg", "-y", "-i", str(src_path),
                 "-ar", "16000", "-ac", "1",
                 "-c:a", "libopus", "-b:a", bitrate,
                 str(out_path),

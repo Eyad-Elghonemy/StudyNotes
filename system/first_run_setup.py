@@ -19,7 +19,13 @@ from pathlib import Path
 from tkinter import ttk
 
 import process_lecture
+from state_manager import BASE_DIR as _DATA_DIR
 
+# فولدر ملفات البرنامج نفسه (السكريبتات/الأصول زي اللوجوهات) - مختلف عن
+# فولدر بيانات اليوزر (_DATA_DIR) لما البرنامج يكون شغال كـ .exe مجمّع
+# (Program Files ضد AppData). لو خلطنا بينهم، .env بيتكتب في مكان
+# ومحاولة قراءته بتحصل من مكان تاني - فالمفاتيح بتتمسح فعليًا كل مرة
+# تفتح البرنامج فيها (كانت المشكلة قبل الإصلاح ده).
 PROJECT_DIR = Path(__file__).resolve().parent
 
 
@@ -61,8 +67,8 @@ def _center_window(win: tk.Toplevel, root: tk.Tk, max_height_ratio: float = 1.0)
     win.geometry(f"{w}x{h}+{x}+{y}")
 
 
-ENV_PATH = PROJECT_DIR / ".env"
-ENV_EXAMPLE_PATH = PROJECT_DIR / ".env.example"
+ENV_PATH = _DATA_DIR / ".env"  # جنب بيانات اليوزر (AppData وقت الـ exe)، مش جنب ملفات البرنامج
+ENV_EXAMPLE_PATH = PROJECT_DIR / ".env.example"  # ده أصل/قالب ثابت من ملفات البرنامج - يفضل هنا صح
 
 
 def _fix_entry_keyboard_shortcuts(entry: ttk.Entry) -> None:
@@ -228,6 +234,7 @@ def _save_env(gemini_key: str, groq_key: str, nvidia_key: str = "") -> None:
     _set_line("GROQ_API_KEY", groq_key)
     if nvidia_key:
         _set_line("NVIDIA_API_KEY", nvidia_key)
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # نحدّث الـ environment الحالية وثوابت process_lecture مباشرة، لأنها
