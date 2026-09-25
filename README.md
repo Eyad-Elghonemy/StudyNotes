@@ -6,7 +6,7 @@
 
 **A desktop app with a GUI that records any lecture or meeting's audio, transcribes it to text, and turns it into organized Markdown notes with rendered math equations — all with zero manual work.**
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue)](../../releases/latest)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue)](../../releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Tkinter](https://img.shields.io/badge/GUI-Tkinter-4c4ddc?logo=python&logoColor=white)](https://docs.python.org/3/library/tkinter.html)
 [![Gemini](https://img.shields.io/badge/AI-Gemini-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
@@ -24,6 +24,8 @@
 - When you're done, one click transcribes the audio to text (Groq Whisper first for speed, Gemini as a fallback), then turns that text into focused notes written in a lecturer's style (Gemini first, Groq as a fallback, with NVIDIA available as an optional extra provider).
 - Long sessions are summarized chunk by chunk, then consolidated into one coherent document using a hierarchical merge, so quality stays high even for multi-hour recordings.
 - Notes are saved as a cumulative Markdown file per lecture, and rendered right inside the app — including LaTeX equations (`$...$` and `$$...$$`) converted to images via matplotlib.
+- Notes can be exported to a properly formatted **PDF** (right-to-left Arabic, syntax-highlighted code, highlight boxes and rendered equations included) using the browser already installed on the user's machine (Edge or Chrome), headless — no extra dependencies.
+- The packaged Windows app can check for new versions on GitHub and update itself silently, with no technical steps required from the user.
 - Everything is tracked with a status (recorded / transcribed / transcribed & explained) so you can always pick up where you left off, or delete a specific piece without breaking the rest.
 
 ---
@@ -37,6 +39,8 @@
 | 📝 **Multi-provider transcription** | Groq (`whisper-large-v3`) as the default, Gemini as a fallback on failure |
 | 🧠 **AI-powered summarization** | Turns raw transcripts into organized, lecturer-style notes (or structured meeting minutes), processed in chunks for long texts |
 | 🔀 **Hierarchical merging** | Partial notes are consolidated in small batches, then merged level by level with dedicated consolidation prompts for higher quality on long sessions |
+| 📄 **PDF export** | One click turns the rendered notes into a PDF via a headless local browser (Edge/Chrome) — same look as in-app (RTL Arabic, code highlighting, callout boxes, equations) |
+| 🔄 **Self-updating** | The installed app checks GitHub Releases for a newer version and installs it silently in the background when you approve |
 | 💬 **In-app feedback** | Rate the app and report ideas/problems from a built-in window, with offline queueing so nothing is lost |
 | 🎓 **Subject-aware notes** | Pick a field per lecture (Engineering, Medicine, Law, Business, Languages, Math & Sciences, Humanities & History, or your own) to tailor the summarization prompt, plus optional 🔧 corrections and 💬 additions callouts |
 | 🛡️ **Rate-limit resilience** | Automatic retries with backoff, request pacing, adaptive splitting of oversized chunks, and fallback between providers |
@@ -44,13 +48,17 @@
 | 🗂️ **Per-lecture state tracking** | Tracks which audio chunks are transcribed/explained, with the ability to undo the last notes update |
 | 🧹 **Selective deletion** | Delete audio/transcript/notes for a whole lecture, or a single file, without affecting the rest (with a typed-name confirmation) |
 | 🖥️ **Bilingual GUI (Arabic/English)** | Built with Tkinter, with correct rendering of Arabic and mixed-language text |
-| 📦 **Packageable as .exe** | Ready to build with PyInstaller (`StudyNotes.spec`) |
+| 📦 **Packaged as a real Windows installer** | Built with PyInstaller, then wrapped into a proper Setup.exe installer with Inno Setup |
 
 ---
 
 ## Releases & Changelog
 
 Newest first. Every version is available on the [Releases page](../../releases).
+
+### v1.5.0 — 2026-09-24
+
+- 🐛 **Fixed PDF export failing in some cases:** exporting to PDF could raise `WinError 32` while cleaning up the temporary browser profile folder used for the headless Edge/Chrome print step — a leftover Chromium subprocess could still be holding a lock on a profile file for a moment after the browser was closed, even though the PDF itself had already been generated successfully. Cleanup now retries a few times instead of failing the whole export
 
 ### v1.4.0 — 2026-09-24
 
@@ -123,13 +131,16 @@ Newest first. Every version is available on the [Releases page](../../releases).
 │   ├── record_session.py      # Command-line system audio recorder (no GUI)
 │   ├── process_lecture.py     # Transcription + summarization + hierarchical merge (Groq / Gemini / NVIDIA)
 │   ├── prompts.py             # All AI prompts (lecture notes, meetings, consolidation)
+│   ├── pdf_export.py          # Converts rendered notes to PDF via a headless local Edge/Chrome
+│   ├── updater.py             # Checks GitHub Releases for a newer version and installs it silently
 │   ├── evaluation.py          # In-app feedback window + Supabase sender with offline queue
 │   ├── feedback_setup.sql     # One-time SQL that creates the Supabase feedback table (insert-only)
 │   ├── state_manager.py       # Folder setup and shared state across scripts
 │   └── math_render.py         # Converts LaTeX to PNG images rendered in the GUI
-├── StudyNotes.spec            # PyInstaller build config for a .exe build
+├── StudyNotes.spec            # PyInstaller build config (produces the raw .exe)
+├── StudyNotes.iss             # Inno Setup script that wraps the .exe into a distributable Setup.exe installer
 ├── requirements.txt           # All required packages
-├── .env.example               # Environment variable template
+├── .env.example                # Environment variable template
 └── (created automatically at runtime)
     ├── .state/                # Per-lecture state (JSON)
     ├── Sound_Recorded/        # Audio files (Opus/FLAC)
@@ -145,6 +156,7 @@ Newest first. Every version is available on the [Releases page](../../releases).
 
 - Python 3.11+
 - `ffmpeg` (optional but recommended) for compressing audio to Opus — if missing, files stay as FLAC (larger size)
+- Microsoft Edge or Google Chrome installed, only if you want to use PDF export (Edge already comes with Windows 10/11)
 - At least one API key from:
   - [Google Gemini](https://ai.google.dev/) → `GEMINI_API_KEY`
   - [Groq](https://console.groq.com/) → `GROQ_API_KEY`
@@ -208,7 +220,7 @@ STUDYNOTES_DIR="D:\Agoor"
 python system/gui_app.py
 ```
 
-From the GUI you can: pick or create a lecture (with its subject), start/pause/stop recording, run transcription and summarization, convert selected parts to notes only, track the status of each audio chunk, and view notes with rendered equations directly.
+From the GUI you can: pick or create a lecture (with its subject), start/pause/stop recording, run transcription and summarization, convert selected parts to notes only, track the status of each audio chunk, export notes to PDF, and view notes with rendered equations directly.
 
 ### Command-line recording (no GUI)
 
@@ -236,13 +248,25 @@ Click **💬 قيّم البرنامج** in the main window to rate the app and 
 
 ---
 
-## Building a .exe (optional)
+## Building a Windows Installer (optional)
+
+Building a distributable `Setup.exe` is a two-step process:
+
+### 1. Build the raw executable with PyInstaller
 
 ```bash
 pyinstaller StudyNotes.spec
 ```
 
-The resulting executable will be in the `dist/` folder.
+This produces `dist/StudyNotes/StudyNotes.exe` — a working but "unpackaged" build (a folder of files, not something you'd hand to another user).
+
+### 2. Wrap it into a real installer with Inno Setup
+
+Open `StudyNotes.iss` in [Inno Setup Compiler](https://jrsoftware.org/isinfo.php) and compile it (`Build > Compile`, or `Ctrl+F9`). This reads the output of step 1 and produces a single `StudyNotes_Setup.exe` in the `Output/` folder — this is the file meant to be shared or attached to a GitHub Release, since it installs the app properly (Start Menu shortcut, uninstaller entry, etc.) instead of just unzipping a folder.
+
+### Self-update mechanism
+
+Once installed, the app checks `GITHUB_OWNER`/`GITHUB_REPO` (set at the top of `updater.py`) for a newer GitHub Release tag than its own `APP_VERSION` (in `gui_app.py`). If a release has a `.exe` asset attached, the app offers to download and install it silently (Inno Setup's `/VERYSILENT` flags), closing itself right before the new installer runs. Publishing a new version is just: bump `APP_VERSION`, rebuild both steps above, and publish a GitHub Release tagged with the same version number with `StudyNotes_Setup.exe` attached as an asset.
 
 ---
 
@@ -251,6 +275,7 @@ The resulting executable will be in the `dist/` folder.
 - `.env` is excluded from version control — already covered by `.gitignore`.
 - Data folders (`.state`, `Sound_Recorded`, `Transcript`, `Markdown`) are also excluded in `.gitignore` so personal lecture content never gets committed by accident.
 - Transcription and summarization send audio/text content to third-party providers (Gemini / Groq / NVIDIA) — don't use this project with confidential content unless you've reviewed their privacy policies.
+- Uninstalling the app does **not** delete your notes: recordings, transcripts and Markdown notes live under `%localappdata%\StudyNotes`, separate from the installed program files, and are left untouched by the uninstaller.
 
 ---
 
