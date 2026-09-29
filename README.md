@@ -56,6 +56,14 @@
 
 Newest first. Every version is available on the [Releases page](../../releases).
 
+### v1.6.0 — 2026-09-29
+
+- Fixed API keys not being saved correctly between app restarts
+- Fixed PDF export failing in some cases after installation
+- Reduced app size significantly
+- Fixed app icon not showing correctly in Windows installed apps list
+- You can now choose the installation folder during setup
+
 ### v1.5.0 — 2026-09-24
 
 - 🐛 **Fixed PDF export failing in some cases:** exporting to PDF could raise `WinError 32` while cleaning up the temporary browser profile folder used for the headless Edge/Chrome print step — a leftover Chromium subprocess could still be holding a lock on a profile file for a moment after the browser was closed, even though the PDF itself had already been generated successfully. Cleanup now retries a few times instead of failing the whole export
