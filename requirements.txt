@@ -5,10 +5,10 @@ python-dotenv
 arabic-reshaper
 python-bidi
 markdown
-Pygments
+pygments
 tkinterweb
 matplotlib
-google-genai
 groq
+google-genai
 openai
 Pillow
