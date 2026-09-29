@@ -28,25 +28,32 @@ class BrowserNotFound(PdfExportError):
 
 
 def find_browser() -> Path | None:
-    """يدوّر على Edge الأول (موجود دايماً على ويندوز 10/11) وبعدين Chrome."""
+    """يدوّر على Chrome الأول لو موجود، وبعدين Edge كـ fallback.
+
+    Chrome قدّام Edge (عكس الترتيب القديم) عمدًا: Edge غالبًا شغّال ميزة
+    "Startup boost" اللي بتخليه يفضل عملية شغالة في الخلفية بعد ما
+    اليوزر يقفله - ولما نحاول نفتح نسخة Headless جديدة، بيسلّم الأمر
+    للنسخة الخلفية دي (اللي مش Headless) بدل ما ينفذه، فمبيطلّعش PDF
+    خالص من غير أي رسالة خطأ واضحة (exit code 0 وهو فعليًا معمل حاجة).
+    Chrome معندوش نفس السلوك ده افتراضيًا."""
     candidates: list[Path] = []
-    for env in ("ProgramFiles(x86)", "ProgramFiles", "LocalAppData"):
-        base = os.environ.get(env)
-        if not base:
-            continue
-        candidates.append(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
     for env in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData"):
         base = os.environ.get(env)
         if not base:
             continue
         candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    for env in ("ProgramFiles(x86)", "ProgramFiles", "LocalAppData"):
+        base = os.environ.get(env)
+        if not base:
+            continue
+        candidates.append(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
 
     for c in candidates:
         if c.is_file():
             return c
 
     # لو متثبتين في مكان غير عادي (أو على نظام غير ويندوز وقت التطوير)
-    for name in ("msedge", "chrome", "google-chrome", "chromium", "chromium-browser"):
+    for name in ("chrome", "google-chrome", "chromium", "chromium-browser", "msedge"):
         found = shutil.which(name)
         if found:
             return Path(found)
@@ -145,15 +152,28 @@ def html_to_pdf(html: str, pdf_path: Path, timeout: int = 120, browser: Path | N
         time.sleep(0.5)
 
         if not tmp_pdf.exists() or tmp_pdf.stat().st_size == 0:
-            detail = ""
+            log_text = ""
             try:
                 log_text = log_file.read_text(encoding="utf-8", errors="ignore").strip()
-                if log_text:
-                    detail = "\n\nتفاصيل من المتصفح:\n" + log_text[-800:]
             except OSError:
                 pass
-            code_info = f"\n\nكود خروج المتصفح: {proc.returncode}"
-            raise PdfExportError("المتصفح خلص من غير ما يطلّع ملف PDF." + code_info + detail)
+
+            if proc.returncode == 0 and not log_text:
+                # توقيع مميز: خرج بنجاح (كود 0) بس من غير أي مخرجات ومن غير
+                # PDF - في الغالب المتصفح سلّم الأمر لنسخة تانية شغالة في
+                # الخلفية بدل ما ينفذه بنفسه (زي "Startup boost" بتاعة Edge).
+                raise PdfExportError(
+                    "المتصفح خرج بنجاح بس من غير ما يطلّع PDF - على الأغلب فيه "
+                    "نسخة تانية منه شغالة في الخلفية بتاخد الأمر بدل النسخة "
+                    "الجديدة.\n\nجرب: افتح إعدادات المتصفح → اقفل \"Startup "
+                    "boost\" (أو \"Continue running background apps\")، اقفل "
+                    "أي نافذة/عملية للمتصفح من Task Manager، وجرب تاني."
+                )
+
+            detail = f"\n\nتفاصيل من المتصفح:\n{log_text[-800:]}" if log_text else ""
+            raise PdfExportError(
+                f"المتصفح خلص من غير ما يطلّع ملف PDF.\n\nكود خروج المتصفح: {proc.returncode}{detail}"
+            )
 
         try:
             # move بدل rename: ممكن الوجهة على درايف تاني غير الـ temp
