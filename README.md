@@ -27,6 +27,7 @@
 - Notes can be exported to a properly formatted **PDF** (right-to-left Arabic, syntax-highlighted code, highlight boxes and rendered equations included) using the browser already installed on the user's machine (Edge or Chrome), headless — no extra dependencies.
 - The packaged Windows app can check for new versions on GitHub and update itself silently, with no technical steps required from the user.
 - Everything is tracked with a status (recorded / transcribed / transcribed & explained) so you can always pick up where you left off, or delete a specific piece without breaking the rest.
+  
 
 ---
 
