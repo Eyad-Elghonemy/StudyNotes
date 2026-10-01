@@ -64,6 +64,7 @@ Newest first. Every version is available on the [Releases page](../../releases).
 - Reduced app size significantly
 - Fixed app icon not showing correctly in Windows installed apps list
 - You can now choose the installation folder during setup
+  
 
 ### v1.5.0 — 2026-09-24
 
