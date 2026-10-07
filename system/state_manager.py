@@ -17,6 +17,23 @@ import threading
 import time
 from pathlib import Path
 
+# ============================================================================
+# حماية قسرية ضد مشكلة tornado/tenacity المعروفة:
+# tenacity (تبعية فرعية لـ google-genai) بتحاول تستورد tornado (مكتبة
+# اختيارية إحنا مش مستخدمينها خالص) جوه try/except ImportError - عادي
+# ومضمون وقت التطوير. لكن جوه الـ exe المجمّع بـ PyInstaller، ظهرت حالات
+# إن tornado بتتبني كـ "حزمة فاضية/ناقصة" (مش غائبة تمامًا) رغم استبعادها
+# من الـ spec، وده بيخلّي الاستيراد الداخلي بتاعها يفشل بشكل تاني (مش
+# ModuleNotFoundError العادي اللي tenacity بتتوقعه وتتعامل معاه)، فالخطأ
+# بيطلع لليوزر بدل ما يتلقط بهدوء.
+#
+# الحل: نحط None في sys.modules['tornado'] يدوي *قبل* أي حد يحاول
+# يستوردها - بايثون وقتها بيرمي ImportError نضيف فورًا لأي حد يعمل
+# "import tornado"، وده بالظبط اللي tenacity متوقعة وبتتعامل معاه صح.
+# إحنا مش بنستخدم tornado في أي حتة من الكود، فمفيش أي خطورة من المنع ده.
+sys.modules.setdefault("tornado", None)
+# ============================================================================
+
 # مكان الكود ومكان البيانات (اتنين منفصلين):
 #
 # - BASE_DIR: مكان ملف .env (مفاتيح الـ API). وقت التطوير = فولدر الكود نفسه.
@@ -212,7 +229,11 @@ def check_disk_space_mb() -> float:
 def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
     """
     يضغط ملف صوتي (FLAC/WAV) لصيغة Opus. بيرجع مسار الملف الجديد.
-    لو ffmpeg مش موجود، أو الضغط فشل، بيرجع نفس المسار الأصلي.
+    لو ffmpeg مش موجود، أو الضغط فشل، أو الناتج ناقص عن الأصل، بيرجع
+    نفس المسار الأصلي (الـ FLAC) - عشان نضمن مفيش صوت بيضيع بصمت أبدًا.
+
+    بيقارن مدة الملف الناتج بالأصلي قبل ما يمسح الأصلي؛ لو الناتج أقصر
+    بشكل ملحوظ، بيسيب الملفين الاتنين ويرجّع الأصلي بدل ما يمسحه.
 
     بيتأكد فعلياً إن الملف الأصلي اتمسح بنجاح (مع إعادة محاولة قصيرة لو
     كان لسه مقفول من عملية تانية)، عشان مايفضلش نسختين من نفس الجزء
@@ -223,9 +244,24 @@ def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
 
     out_path = src_path.with_suffix(".opus")
     try:
+        # creationflags=CREATE_NO_WINDOW: من غير ده، كل استدعاء لـ ffmpeg
+        # وقت ما البرنامج شغال كـ exe (windowed, من غير console) كان بيفتح
+        # نافذة Console سودا تومض لثانية وتختفي.
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         subprocess.run(
             [
-                _FFMPEG_CMD or "ffmpeg", "-y", "-i", str(src_path),
+                _FFMPEG_CMD or "ffmpeg",
+                # بنجبر ffmpeg يحلل الملف كامل فعليًا (مش يثق في "الطول"
+                # المكتوب في الـ Header بس) قبل ما يبدأ التحويل - ده بيحمي
+                # من حالات نادرة فيها الـ Header بيقول "طول غير معروف" أو
+                # غلط رغم إن الصوت الفعلي كله موجود وكامل جوه الملف؛ من
+                # غيره بعض نسخ ffmpeg بتوقف عند الطول المكتوب غلط بدل آخر
+                # الملف الفعلي. القيم دي (بالبايت/ميكروثانية) كبيرة كفاية
+                # لأي ملف تسجيل محاضرة واقعي (لحد كذا ساعة).
+                "-analyzeduration", "100M", "-probesize", "100M",
+                "-y", "-i", str(src_path),
                 "-ar", "16000", "-ac", "1",
                 "-c:a", "libopus", "-b:a", bitrate,
                 str(out_path),
@@ -233,9 +269,28 @@ def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            **kwargs,
         )
         if not out_path.exists() or out_path.stat().st_size == 0:
             return src_path  # الضغط فشل فعلياً رغم مفيش exception
+
+        # تحقّق إضافي مهم: الملف "موجود ومش فاضي" مش كفاية لوحدها - ffmpeg
+        # ممكن (نادراً، بسبب نسخة/بناء معين منه) يطلّع ملف Opus صحيح لكن
+        # بمدة أقصر من الأصل (بيانات صوت ناقصة فعليًا). لو مسحنا الـ FLAC
+        # الأصلي في الحالة دي، البيانات الضايعة مش هترجع تاني - فبنقارن
+        # المدتين الأول، ومش بنمسح الأصل غير لو فعلاً متطابقين (بهامش
+        # بسيط للفروق الطبيعية جدًا في الترميز).
+        src_duration = _audio_duration_seconds(src_path)
+        out_duration = _audio_duration_seconds(out_path)
+        if (
+            src_duration is not None and out_duration is not None
+            and out_duration < src_duration - 2  # هامش ثانيتين لفروق الترميز الطبيعية
+        ):
+            # الضغط "نجح" تقنيًا بس الناتج ناقص عن الأصل - نسيب الاتنين
+            # (الـ Opus الناقص + الـ FLAC الأصلي) ونرجّع الأصلي عشان
+            # الاستخدام الفعلي (تفريغ/تلخيص) يكمل بالملف الكامل، ومفيش
+            # بيانات بتتفقد بصمت.
+            return src_path
 
         # نحاول نمسح الأصلي كذا مرة لو كان لسه مقفول من ثريد تاني
         for attempt in range(5):
