@@ -14,6 +14,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# لازم السطر ده يتنفذ *قبل* "from google import genai" تحت - عشان كده
+# حطيناه هنا قبل كل حاجة بدل ما نستنى state_manager يتستورد (تفاصيل
+# المشكلة والحل في state_manager.py نفسه، بحث عن "tornado").
+sys.modules.setdefault("tornado", None)
+
 from dotenv import load_dotenv
 from google import genai
 
