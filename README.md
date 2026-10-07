@@ -6,8 +6,8 @@
 
 **A desktop app with a GUI that records any lecture or meeting's audio, transcribes it to text, and turns it into organized Markdown notes with rendered math equations — all with zero manual work.**
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue)](../../releases/latest)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-1.7.0-blue)](../../releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Tkinter](https://img.shields.io/badge/GUI-Tkinter-4c4ddc?logo=python&logoColor=white)](https://docs.python.org/3/library/tkinter.html)
 [![Gemini](https://img.shields.io/badge/AI-Gemini-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
 [![Groq](https://img.shields.io/badge/AI-Groq-F55036?logo=groq&logoColor=white)](https://groq.com/)
