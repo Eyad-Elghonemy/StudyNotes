@@ -57,7 +57,7 @@
 
 Newest first. Every version is available on the [Releases page](../../releases).
 
-### v1.7.0:
+### v1.7.0 — 2026-10-08:
 
 - Fixed recordings sometimes coming out shorter after compression
 - Fixed PDF export failing in some cases
