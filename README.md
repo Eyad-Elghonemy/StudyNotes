@@ -60,14 +60,9 @@ Newest first. Every version is available on the [Releases page](../../releases).
 ### v1.7.0 — 2026-10-08:
 
 - Fixed recordings sometimes coming out shorter after compression
-- Fixed PDF export failing in some cases
-- Fixed the app failing to launch for some users
 - Fixed a black console window flashing while recording
-- Fixed provider logos not showing in Model Settings
-- Fixed app icon in the Windows installed apps list
 - Updates now open the installer for you to finish with a couple of clicks
-- You can now choose the installation folder during setup
-- Smaller download size
+- Fixed the app failing to launch for some users
 
 ### v1.6.0 — 2026-09-29
 
