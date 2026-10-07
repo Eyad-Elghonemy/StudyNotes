@@ -12,10 +12,6 @@
 [![Gemini](https://img.shields.io/badge/AI-Gemini-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
 [![Groq](https://img.shields.io/badge/AI-Groq-F55036?logo=groq&logoColor=white)](https://groq.com/)
 [![NVIDIA](https://img.shields.io/badge/AI-NVIDIA-76B900?logo=nvidia&logoColor=white)](https://www.nvidia.com/)
-[![Whisper](https://img.shields.io/badge/STT-Whisper--large--v3-1f8a4c)](https://github.com/openai/whisper)
-[![Gemini](https://img.shields.io/badge/LLM-Gemini--3.6--flash-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
-[![Groq](https://img.shields.io/badge/LLM-Groq--gpt--oss--120b-F55036?logo=groq&logoColor=white)](https://groq.com/)
-[![NVIDIA](https://img.shields.io/badge/LLM-NVIDIA--nemotron--3-76B900?logo=nvidia&logoColor=white)](https://www.nvidia.com/)
 
 </div>
 
