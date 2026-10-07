@@ -65,6 +65,34 @@ def _compress_in_background(flac_path):
         print(f"[i] ffmpeg مش متثبت، {flac_path.name} هيفضل FLAC (حجم أكبر).")
 
 
+def _close_flac_safely(f: sf.SoundFile, path) -> None:
+    """بيقفل ملف FLAC بتأكيد - ده مش شكليات: إغلاق FLAC هو اللحظة اللي
+    مكتبة الكتابة فيها بترجع لبداية الملف وتكتب "الطول الفعلي الكلي"
+    مكان القيمة المؤقتة "غير معروف" اللي اتحطت وقت الكتابة المتدرّجة.
+    لو الإغلاق فشل وابتلعنا الخطأ بصمت (زي الكود القديم)، الملف بيفضل
+    فيه كل الصوت فعليًا لكن الـ Header بتاعه بيقول "طول غير معروف" -
+    وده بالظبط اللي بيخلّي بعض نسخ ffmpeg تقف قبل آخر الملف بالغلط
+    (التحويل لـ Opus بيطلع "ناقص" رغم إن البيانات كلها موجودة).
+
+    هنا بدل الابتلاع الصامت: 3 محاولات بفاصل بسيط (لو السبب مؤقت زي
+    قرص مشغول لحظيًا)، وتحذير واضح في السجل لو فشلت فعلاً كل المحاولات -
+    عشان اليوزر يعرف إن الجزء ده محتاج انتباه بدل ما يكتشف النقص بعدين
+    من غير أي تفسير."""
+    for attempt in range(3):
+        try:
+            f.close()
+            return
+        except Exception as e:
+            if attempt == 2:
+                print(
+                    f"[!] تحذير مهم: فشل إغلاق {path.name} بشكل سليم "
+                    f"({e}) - الملف ده ممكن يطلع ناقص لو اتضغط لـ Opus. "
+                    "جرب تفرّغه من نسخة الـ FLAC الأصلية مباشرة لو حصلت مشكلة."
+                )
+            else:
+                time.sleep(0.3)
+
+
 def record_worker(lecture: str):
     """
     بيسجل بشكل مستمر، وكل CHUNK_MINUTES دقيقة بيقفل الملف الحالي (ويبدأ
@@ -96,7 +124,7 @@ def record_worker(lecture: str):
 
             # وصلنا لحد الوقت المحدد للجزء ده؟ اقفله وابدأ جزء جديد
             if frames_written >= chunk_frames_limit and not stop_flag.is_set():
-                f.close()
+                _close_flac_safely(f, current_path)
                 threading.Thread(
                     target=_compress_in_background, args=(current_path,), daemon=True
                 ).start()
@@ -114,10 +142,7 @@ def record_worker(lecture: str):
         # لازم نتأكد من قفل الملف دايماً حتى لو حصل استثناء نص الكتابة
         # (زي امتلاء الديسك) - وإلا الملف بيفضل مفتوح/مقفول من نظام
         # التشغيل ومينفعش يتقرأ أو يتضغط بعد كده.
-        try:
-            f.close()
-        except Exception:
-            pass
+        _close_flac_safely(f, current_path)
         print(f"[✓] آخر جزء اتحفظ: {current_path.name}")
         # نضغط آخر جزء برضه (بشكل متزامن هنا عشان نستناه قبل ما نكمل)
         _compress_in_background(current_path)
