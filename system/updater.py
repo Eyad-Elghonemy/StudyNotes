@@ -1,21 +1,29 @@
 """
-آلية التحقق من وجود نسخة أحدث من StudyNotes على GitHub Releases، وتنزيلها
-وتثبيتها صامتة (من غير أي تفاعل تقني من اليوزر) لو وافق.
+آلية التحقق من وجود نسخة أحدث من StudyNotes، وتنزيلها وتشغيل تثبيتها
+(اليوزر بيكمّل التثبيت بنفسه بضغطات بسيطة Next/Install).
 
 الفكرة بالكامل:
-1) check_for_update(current_version) بتسأل GitHub API: "إيه آخر Release
-   منزّل على الريبو؟" وتقارنه بالنسخة الحالية اللي البرنامج شغال بيها.
+1) check_for_update(current_version) بتقرا ملف version.json ثابت من
+   جذر الريبو على GitHub (عن طريق raw.githubusercontent.com، مش GitHub
+   REST API) وتقارن رقم النسخة فيه بالنسخة الحالية اللي البرنامج شغال
+   بيها.
 2) لو فيه نسخة أحدث، بترجع معلومات عنها (رقم النسخة + رابط ملف التثبيت
-   المرفق بالـ Release + ملاحظات النسخة لو موجودة).
+   + ملاحظات النسخة لو موجودة).
 3) لو اليوزر وافق يحدّث، download_installer() بتنزل ملف التثبيت (Setup.exe)
-   لفولدر مؤقت على جهازه.
-4) launch_silent_installer() بتشغّل ملف التثبيت ده بعلامات "صامتة" (من
-   غير ما تظهرله أي نافذة تثبيت خالص)، وبتسكّر البرنامج الحالي عشان
-   ملفاته تبقى حرة يتكتب عليها.
+   لفولدر مؤقت على جهازه، مع عرض تقدّم التحميل.
+4) launch_installer() بتشغّل ملف التثبيت ده عادي (زي أي تثبيت يدوي) -
+   هتظهر نافذة Inno Setup المعتادة واليوزر بيكمّلها بنفسه.
 
-ملحوظة مهمة: العلامات الصامتة دي (/VERYSILENT...) خاصة بـ Inno Setup -
-لازم ملف الـ Setup.exe يكون معمول بيه فعلاً (وده هيحصل في خطوة لاحقة)
-عشان الآلية دي تشتغل فعليًا من الأول للآخر.
+ليه version.json بدل GitHub API مباشرة (Bug #13 في تقرير المراجعة):
+الـ REST API (api.github.com) بيحدد الطلبات الـ unauthenticated بـ 60
+طلب/ساعة *لكل IP عام*، مش لكل يوزر. في شبكات بتستخدم CGNAT (شائع جدًا
+عند بعض مزوّدي خدمة الإنترنت في مصر مثلاً)، مئات/آلاف الأجهزة بتظهر
+بنفس الـ IP - فالحد ده ممكن يتخلّص بسرعة من استخدام ناس تانيين خالص على
+نفس الشبكة، والبرنامج (زي ما كان مكتوب قبل كده) بيترجم فشل الطلب ده
+لـ"مفيش تحديث" بصمت، من غير ما اليوزر يعرف إن الفحص نفسه فشل أصلاً.
+raw.githubusercontent.com (قراءة ملف ثابت، مش REST API) مالهاش نفس
+الحد الصارم ده - نفس الفكرة اللي remote_config.py شغالة بيها بالظبط
+لملف model_config.json.
 """
 
 import json
@@ -32,10 +40,11 @@ from pathlib import Path
 GITHUB_OWNER = "Eyad-Elghonemy"
 GITHUB_REPO = "StudyNotes"
 
-_API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+_VERSION_URL = (
+    f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/version.json"
+)
 _RELEASES_PAGE = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 
-# GitHub API بيرفض أي طلب من غير User-Agent واضح
 _HEADERS = {"User-Agent": f"{GITHUB_REPO}-update-checker"}
 
 
@@ -59,40 +68,34 @@ def check_for_update(current_version: str, timeout: int = 8) -> dict | None:
     بترجع None في الحالات دي (كلها "مفيش تحديث" من وجهة نظر البرنامج،
     من غير ما توقف أو توريه رسالة خطأ لليوزر - مشكلة نت مؤقتة مثلاً
     مفيهاش داعي نزعجه بيها):
-    - مفيش نت / GitHub مش راضي يرد / أي خطأ تاني غير متوقع
-    - آخر Release مفيهوش ملف .exe مرفق أصلاً
+    - مفيش نت / الملف مش موجود/وصل بـ JSON غلط / أي خطأ تاني غير متوقع
+    - version.json مفيهوش download_url أصلاً
     - النسخة الحالية هي الأحدث فعلاً
 
     لو فيه تحديث فعلي، بترجع dict فيه:
     {"version": "1.5.0", "download_url": "...", "notes": "..."}
     """
     try:
-        req = urllib.request.Request(_API_URL, headers=_HEADERS)
+        req = urllib.request.Request(_VERSION_URL, headers=_HEADERS)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
         return None
 
-    latest_tag = data.get("tag_name", "")
-    if not latest_tag or not is_newer(latest_tag, current_version):
+    latest = data.get("version", "")
+    if not latest or not is_newer(latest, current_version):
         return None
 
-    download_url = None
-    for asset in data.get("assets", []):
-        name = asset.get("name", "")
-        if name.lower().endswith(".exe"):
-            download_url = asset.get("browser_download_url")
-            break
-
+    download_url = data.get("download_url")
     if not download_url:
-        # فيه Release أحدث بس ملف الـ exe مش متحط عليه لسه - نتجاهله
-        # (بدل ما نودي اليوزر لصفحة فاضية)
+        # version.json اتعدّل بالغلط من غير download_url - نتجاهله
+        # (بدل ما نودي اليوزر لرابط فاضي)
         return None
 
     return {
-        "version": latest_tag.lstrip("vV"),
+        "version": latest.lstrip("vV"),
         "download_url": download_url,
-        "notes": (data.get("body") or "").strip(),
+        "notes": (data.get("notes") or "").strip(),
     }
 
 
@@ -121,26 +124,20 @@ def download_installer(download_url: str, on_progress=None) -> Path:
     return dest
 
 
-def launch_silent_installer(installer_path: Path) -> None:
+def launch_installer(installer_path: Path) -> None:
     """
-    بتشغّل ملف التثبيت بعلامات Inno Setup الصامتة:
-    - /VERYSILENT: من غير أي نافذة تثبيت تظهر خالص
-    - /SUPPRESSMSGBOXES: من غير أي رسائل تأكيد
-    - /NORESTART: متعملش Restart لجهاز اليوزر
-    - /CLOSEAPPLICATIONS: يقفل أي نسخة شغالة من StudyNotes لوحده لو لقاها
-      (لازم ملف الـ .iss يكون مفعّل فيه CloseApplications)
+    بتشغّل ملف التثبيت عادي (زي ما لو اليوزر دبل كليك عليه بنفسه) - هتظهر
+    نافذة Inno Setup المعتادة (Next / Next / Install)، واليوزر بيكمّلها
+    بنفسه.
 
-    البرنامج الحالي هيقفل نفسه فورًا بعد ما يشغّل الأمر ده (المفروض
-    الكود اللي بينادي الدالة دي يعمل self.root.destroy() بعدها على طول)
-    عشان يسيب ملفاته حرة للتثبيت الجديد يكتب عليها.
+    اتغيّرت من تثبيت صامت تمامًا (/VERYSILENT) للشكل العادي ده عمدًا:
+    التثبيت الصامت كان بيفشل بصمت في حالات كتير مختلفة حسب جهاز اليوزر
+    (مضاد الفيروسات، صلاحيات، تعارضات...) من غير ما نقدر نعرف السبب أو
+    نوريله رسالة خطأ مفيدة - التثبيت العادي أبسط وأضمن، وبيوري أي مشكلة
+    بوضوح لو حصلت بدل ما تفشل في الخفاء.
+
+    CloseApplications=yes في ملف الـ .iss لسه بيتكفّل بقفل أي نسخة شغالة
+    من StudyNotes تلقائيًا لو لقاها وقت التثبيت، فمفيش داعي لأي علامة
+    هنا لقفل البرنامج - ده بيحصل تلقائي من جوه المثبّت نفسه.
     """
-    subprocess.Popen(
-        [
-            str(installer_path),
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/CLOSEAPPLICATIONS",
-        ],
-        close_fds=True,
-    )
+    subprocess.Popen([str(installer_path)], close_fds=True)
