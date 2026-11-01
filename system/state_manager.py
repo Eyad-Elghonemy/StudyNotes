@@ -117,11 +117,24 @@ def list_existing_lectures() -> list[str]:
 
 def load_state(lecture: str) -> dict:
     path = STATE_FOLDER / f"{lecture}.json"
+    data = {}
     if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    else:
-        data = {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            # ملف الـ state اتلف (مثلاً الجهاز اتقفل فجأة وسط الكتابة
+            # القديمة قبل إصلاح save_state تحت) - من غير الحماية دي، أي
+            # محاولة فتح للمحاضرة دي كانت بتطيّح البرنامج بالكامل (crash)
+            # من غير ما نقدر نفتحها تاني أبدًا. بدل كده: نحذّر في اللوج
+            # ونرجّع للقيم الافتراضية (زي لو المحاضرة دي أول مرة) - أحسن
+            # من كراش كامل، حتى لو معناها فقدان آخر تحديثات متسجلة.
+            print(
+                f"[!] تحذير: ملف حالة المحاضرة \"{lecture}\" تالف أو مش قابل "
+                f"للقراءة ({e}) - هيتعامل معاها كمحاضرة جديدة. لو كانت فيها "
+                "تقدّم سابق، ممكن يكون ضاع."
+            )
+            data = {}
     # قيم افتراضية لأي حقل جديد اتضاف بعدين، عشان الملفات القديمة تفضل شغالة
     data.setdefault("transcribed_files", [])  # اتفرغت (بس مش بالضرورة اتشرحت)
     data.setdefault("explained_files", [])    # اتفرغت واتشرحت كمان
@@ -143,9 +156,20 @@ def load_state(lecture: str) -> dict:
 
 
 def save_state(lecture: str, state: dict) -> None:
+    """بيكتب ملف الـ state بشكل atomic: بيكتب على ملف مؤقت الأول، وبعد
+    ما الكتابة تخلص بنجاح بالكامل، بيستبدل الملف الأصلي بيه دفعة واحدة
+    (os.replace). العملية دي ذرّية على مستوى نظام التشغيل - يعني لو
+    البرنامج اتقفل فجأة (قفل جهاز، انقطاع كهرباء) في أي لحظة أثناء
+    الكتابة، إما الملف القديم يفضل زي ما هو بالكامل، أو الجديد يحل
+    محله بالكامل - مفيش احتمال نتيجة "نص مكتوبة" تطيّح البرنامج بعد كده
+    (Bug #03 في تقرير المراجعة)."""
     path = STATE_FOLDER / f"{lecture}.json"
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = path.with_suffix(".json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())  # نتأكد المحتوى فعليًا وصل للقرص قبل الـ rename
+    os.replace(tmp_path, path)
 
 
 # =========================================================================
@@ -564,5 +588,46 @@ def delete_specific_files(
 
                 state["transcript_ranges"] = ranges
                 save_state(lecture, state)
+
+    return report
+
+
+def delete_lecture_completely(lecture: str) -> dict:
+    """مسح نهائي وكامل للمحاضرة/الجلسة - مختلف عن delete_lecture_data:
+    ده بيمسح كل حاجة (صوت + تفريغ + نوتس) **وكمان ملف الـ state نفسه**
+    (.state/<lecture>.json)، وهو ده اللي list_existing_lectures() بيعتمد
+    عليه (مع أي صوت متبقي) عشان يعرض المحاضرة في القائمة من الأساس.
+
+    من غير مسح ملف الـ state، محاضرة اتمسح كل محتواها (بـ
+    delete_lecture_data بكل الأعلام True) كانت بتفضل ظاهرة في القائمة
+    فاضية من غير أي سبب - المحاضرة دي كانت بتفضل "موجودة" شكليًا بس من
+    غير أي بيانات فعلية تحتها.
+
+    بيرجع تقرير بعدد/نوع الملفات اللي اتمسحت فعليًا."""
+    report = {"audio_files": 0, "transcript": False, "notes": False, "state": False}
+
+    for ext in ("opus", "flac", "wav"):
+        for p in RECORD_FOLDER.glob(f"{lecture}__*.{ext}"):
+            try:
+                p.unlink(missing_ok=True)
+                report["audio_files"] += 1
+            except Exception:
+                pass
+
+    transcript_path = TRANSCRIPT_FOLDER / f"{lecture}.txt"
+    if transcript_path.exists():
+        transcript_path.unlink(missing_ok=True)
+        report["transcript"] = True
+
+    md_path = MARKDOWN_FOLDER / f"{lecture}.md"
+    if md_path.exists():
+        md_path.unlink(missing_ok=True)
+        report["notes"] = True
+
+    with get_lecture_lock(lecture):
+        state_path = STATE_FOLDER / f"{lecture}.json"
+        if state_path.exists():
+            state_path.unlink(missing_ok=True)
+            report["state"] = True
 
     return report
