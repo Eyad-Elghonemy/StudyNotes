@@ -19,7 +19,10 @@ import soundcard as sc
 import soundfile as sf
 from dotenv import load_dotenv
 
-from state_manager import BASE_DIR, RECORD_FOLDER, pick_lecture_name, compress_to_opus, ffmpeg_available
+from state_manager import (
+    BASE_DIR, RECORD_FOLDER, pick_lecture_name, compress_to_opus, ffmpeg_available,
+    load_state,
+)
 
 load_dotenv(BASE_DIR / ".env")  # يقرأ ملف .env من مكان بيانات اليوزر
 
@@ -30,12 +33,35 @@ _PART_NUM_RE = re.compile(r"__Part (\d+)\.", re.IGNORECASE)
 
 
 def _next_part_number(lecture: str) -> int:
+    """بيحسب رقم الجزء التالي من أعلى قيمتين: (أ) أرقام الأجزاء
+    الموجودة فعليًا على القرص دلوقتي، و(ب) أرقام الأجزاء المسجّلة في
+    state["transcribed_files"] (حتى لو اتمسحت من القرص بعد التفريغ -
+    خيار "امسح الصوت بعد التفريغ" بيمسحها فعليًا).
+
+    من غير (ب): لو كل أجزاء محاضرة اتفرّغت وبعدين اتمسحت من القرص،
+    وبعدين رجعت سجّلت على نفس المحاضرة تاني، الترقيم كان بيبدأ من "Part
+    01" تاني - ولو الجزء الجديد اتضغط لـ Opus قبل ما تدوس "فرّغ" (بيبقى
+    اسمه مطابق حرفيًا لاسم الجزء القديم اللي اتمسح)، البرنامج كان بيفتكر
+    إنه "اتفرّغ قبل كده" (بنفس الاسم) ويتجاهله بصمت - فقدان بيانات من
+    غير أي تحذير (Bug #01 في تقرير المراجعة)."""
     highest = 0
     for ext in ("opus", "flac", "wav"):
         for p in RECORD_FOLDER.glob(f"{lecture}__Part *.{ext}"):
             m = _PART_NUM_RE.search(p.name)
             if m:
                 highest = max(highest, int(m.group(1)))
+
+    try:
+        state = load_state(lecture)
+        for name in state.get("transcribed_files", []):
+            m = _PART_NUM_RE.search(name)
+            if m:
+                highest = max(highest, int(m.group(1)))
+    except Exception:
+        # لو فشل قراءة الـ state لأي سبب، نكمل بالرقم المحسوب من القرص
+        # بس - أحسن من ما نوقف التسجيل بالكامل بسبب الحماية الإضافية دي.
+        pass
+
     return highest + 1
 
 
