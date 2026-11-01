@@ -28,6 +28,7 @@ import threading
 import time
 import traceback
 import tkinter as tk
+from tkinter import font as tkfont
 from datetime import datetime
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
@@ -65,6 +66,7 @@ from state_manager import (
     ffmpeg_available,
     delete_lecture_data,
     delete_specific_files,
+    delete_lecture_completely,
     check_disk_space_mb,
     LOW_DISK_WARNING_MB,
     audio_duration_minutes_safe,
@@ -123,6 +125,12 @@ PALETTE = {
     "accent_dark": "#3d3eb0",
     "danger": "#c62828",
     "danger_dark": "#a92121",
+    # لون أغمق وأشبع من "danger" العادي - مخصص بس لزرار "مسح المحاضرة
+    # بالكامل" (أخطر إجراء في البرنامج، مالوش رجعة ومش زي باقي المسح
+    # الانتقائي)، عشان يبان مختلف بصريًا عن زرار "امسح المحدد" العادي
+    # رغم إن الاتنين "أحمر" في العموم.
+    "danger_critical": "#7a1020",
+    "danger_critical_dark": "#5c0c18",
     "success": "#1f8a4c",
     "success_dark": "#186e3c",
     "info": "#0f6fb0",
@@ -160,7 +168,26 @@ HIGHLIGHT_STYLES = {
     "🕒": ("hl-deadline", "#fdecec", "#b03a2e"),     # ميعاد/امتحان
     "🔧": ("hl-correction", "#fdf1e3", "#e67e22"),   # تصحيح (اختياري)
     "💬": ("hl-addition", "#e8f8f5", "#16a085"),     # إضافة من المدوّن (اختياري)
+    "🎓": ("hl-exam", "#f3ecfb", "#9b59b6"),         # سؤال امتحان محتمل
+    "🚩": ("hl-redflag", "#fde8e8", "#d93025"),      # تحذير سريري (طب)
+    "⚖️": ("hl-case-law", "#eef0fb", "#5b5fc7"),      # تطبيق على واقعة (قانون)
+    "🗣️": ("hl-usage", "#e6f7f5", "#0e9488"),         # مثال استخدام (لغات)
+    "📖": ("hl-historical", "#fbf0e4", "#b8860b"),    # حالة توضيحية (تاريخ/علوم إنسانية)
+    "📅": ("hl-next-meeting", "#eaf3fc", "#1a73e8"),  # ميعاد الاجتماع القادم
 }
+
+
+def _faded_white(bg_hex: str, alpha: float = 0.8) -> str:
+    """بترجع لون solid (6 خانات hex، بدون قناة alpha) بيحاكي شكل أبيض
+    شفاف بنسبة alpha فوق bg_hex - عشان Tk العادي (على عكس CSS) مش بيدعم
+    صيغة الـ 8 خانات ("#rrggbbaa") خالص وبيرمي "invalid color name" لو
+    استخدمناها كـ fg/bg مباشرة. هنا بنعمل المزج يدويًا وقت التشغيل بدل
+    ما نثبّت لون مخلوط مسبقًا - عشان يفضل صحيح تلقائيًا مهما اتغيّر لون
+    الخلفية (bg_hex) اللي بتتحط فوقه."""
+    bg_hex = bg_hex.lstrip("#")
+    r, g, b = int(bg_hex[0:2], 16), int(bg_hex[2:4], 16), int(bg_hex[4:6], 16)
+    blend = lambda c: round(c + (255 - c) * alpha)
+    return f"#{blend(r):02x}{blend(g):02x}{blend(b):02x}"
 
 
 def _colorize_blockquotes(html_body: str) -> str:
@@ -291,8 +318,32 @@ _NON_ARABIC_RUN_RE = re.compile(
 def _isolate_ltr_runs(text: str) -> str:
     """يحوّط أي جزء لاتيني/رقمي/رمزي داخل السطر بعلامات LRI...PDI عشان
     خوارزمية bidi تعامله كوحدة منفصلة، بدل ما تدمجه جوه سياق العربي وتكسر
-    ترتيب الأقواس/الأسهم اللي جواه."""
+    ترتيب الأقواس/الأسهم اللي جواه.
+    مخصصة لسجل الأحداث (Text widget) بس، اللي بيعدي على python-bidi
+    بشكل منفصل (_bidi_display) وبيفهم LRI/PDI صح لأنه بيعمل المعالجة
+    بالكود مش بالاعتماد على محرك رسم ويندوز. لعناصر Tk العادية (Label/
+    زرار/عنوان نافذة) استخدم _isolate_ltr_runs_label بدلها - راجع
+    الكومنت على LRE/PDF تحت ليه الاتنين مش نفس الحاجة."""
     return _NON_ARABIC_RUN_RE.sub(lambda m: f"{LRI}{m.group(0)}{PDI}", text)
+
+
+# LRE/PDF (Left-to-Right Embedding / Pop Directional Formatting) - من
+# يونيكود 3.0 (قديمة جدًا)، على عكس LRI/PDI فوق (يونيكود 6.3، 2013).
+# عناصر Tk العادية (Label, Button, عنوان نافذة...) على ويندوز بتتعرض عن
+# طريق Uniscribe - محرك قديم (مُستبدل بـ DirectWrite من مايكروسوفت نفسها
+# من زمان) واتوقف تطويره قبل ما الـ isolates تتضاف لليونيكود، فمش عارف
+# يتعامل معاها كعلامة اتجاه خفية - بيعرضها كمربعات فاضية (tofu) زي أي
+# رمز مش معروف ليه. LRE/PDF قديمة بما يكفي إن Uniscribe يفهمها ويتعامل
+# معاها صح كعلامة اتجاه (بدون ما تظهر كحرف خالص).
+LRE = "\u202A"
+PDF = "\u202C"
+
+
+def _isolate_ltr_runs_label(text: str) -> str:
+    """زي _isolate_ltr_runs بالظبط (نفس الـ regex)، بس بعلامات LRE...PDF
+    بدل LRI...PDI - مخصصة لأي نص بيتحط في Label/Button/عنوان نافذة Tk
+    عادي (مش جوه سجل الأحداث)."""
+    return _NON_ARABIC_RUN_RE.sub(lambda m: f"{LRE}{m.group(0)}{PDF}", text)
 
 
 _HEADPHONE_NAME_KEYWORDS = (
@@ -396,6 +447,18 @@ class StudyApp:
         # فحص هادي عن تحديث جديد في الخلفية - لو مفيش تحديث، مفيش أي حاجة
         # هتظهر لليوزر خالص. لو فيه، هيظهرله بوكس بسيط يسأله يوافق ولا لأ.
         self.root.after(2500, lambda: self._check_for_update(manual=False))
+        # تحديث سلسلة الموديلات (model_config.json) مرة عند فتح البرنامج -
+        # في ثريد منفصل عشان ميأخرش فتح الواجهة. تحديث إضافي بيحصل كمان
+        # عند كل دوس على زراير "فرّغ/لخّص" (_refresh_remote_config_async
+        # تحت) - موجودة هنا كمان عشان أول محاضرة في الجلسة تاخد نسخة
+        # محدّثة حتى لو المستخدم ضغط بسرعة قبل ما الفحص هنا يخلص.
+        self._refresh_remote_config_async()
+
+    def _refresh_remote_config_async(self):
+        """فحص model_config.json في ثريد منفصل (مش بيوقف أو يأخّر أي
+        زرار) - remote_config.refresh() بترجع بهدوء لو مفيش نت، فمفيش
+        داعي try/except هنا."""
+        threading.Thread(target=process_lecture.remote_config.refresh, daemon=True).start()
 
     # ---------------------------------------------------------- Startup checks
     def _startup_checks(self):
@@ -521,14 +584,24 @@ class StudyApp:
 
     def _on_update_downloaded(self, progress_win: tk.Toplevel, installer_path):
         progress_win.destroy()
-        self._log("✓ اتحمّل التحديث - جاري التثبيت وإعادة فتح البرنامج...")
+        self._log("✓ اتحمّل التحديث - هيفتح برنامج التثبيت دلوقتي.")
+        # بنوضّح لليوزر إن نافذة تثبيت هتفتح وهو المفروض يكمّلها بنفسه
+        # (Next / Install) قبل ما نقفل البرنامج الحالي - عشان ميستغربش
+        # لما يشوف نافذة جديدة فجأة.
+        show_info(
+            "Installer Ready",
+            "The installer window will open now. Please complete the setup "
+            "(Next \u2192 Install) to finish updating StudyNotes.\n\n"
+            "This app will close once the installer opens.",
+        )
         try:
-            updater.launch_silent_installer(installer_path)
+            updater.launch_installer(installer_path)
         except Exception as e:
             show_error("Installation Failed", f"Couldn't launch the installer.\n\nDetails: {e}")
             return
-        # نقفل البرنامج الحالي على طول عشان ملفاته تبقى حرة للتثبيت
-        # الجديد يكتب عليها من غير أي تعارض.
+        # نقفل البرنامج الحالي عشان ملفاته تبقى حرة للتثبيت يكتب عليها -
+        # لو كان لسه شغال، CloseApplications في ملف الـ .iss كمان بيتكفّل
+        # بقفله تلقائي من جوه المثبّت نفسه كخط دفاع إضافي.
         self.root.destroy()
 
     def _on_first_run_setup_done(
@@ -1086,6 +1159,15 @@ class StudyApp:
 
     def _show_model_settings_dialog(self):
         import first_run_setup
+        # فحص متزامن (sync, مش async زي الزراير) لآخر نسخة من
+        # model_config.json قبل ما نبني النافذة - عشان لو حد عدّل
+        # الترتيب على GitHub، النافذة دي بالذات (اللي اليوزر فتحها
+        # بالذات عشان يشوف/يغيّر الإعدادات الحالية) تعرضه صح على طول،
+        # مش نسخة قديمة متخزنة من فحص سابق (فتح البرنامج أو آخر زرار).
+        # بلوك قصير مقبول هنا (نافذة إعدادات بتتفتح بقصد، مش في منتصف
+        # عملية حساسة للوقت زي التفريغ/التلخيص) - وبيرجع بهدوء للكاش/
+        # الافتراضي خلال نفس الـ timeout لو مفيش نت أصلاً.
+        process_lecture.remote_config.refresh()
         win = tk.Toplevel(self.root)
         win.title("Model Settings")
         win.configure(bg=PALETTE["bg"])
@@ -1216,11 +1298,29 @@ class StudyApp:
         style = ttk.Style(win)
         style.configure("Settings.TCombobox", padding=6)
 
+        # الكتالوج بقى ديناميكي (get_*_model_choices()) بدل قاموس ثابت -
+        # بيتبنى لحظيًا من remote_config كل ما النافذة دي تتفتح، فأي موديل
+        # اتضاف/اتشال/اتعطّل من model_config.json على GitHub بيظهر أو
+        # يختفي من الـ dropdown هنا تلقائي من غير أي تعديل كود.
+        transcribe_choices = process_lecture.get_transcribe_model_choices()
+        summary_choices = process_lecture.get_summary_model_choices()
+
+        # لو القيمة المحفوظة (.env) مفتاح قديم (legacy) من كتالوج ثابت
+        # قديم، أو موديل اتشال خالص من model_config.json، لازم نترجمها
+        # لمفتاح موجود فعلاً في الكتالوج الديناميكي الحالي قبل ما نبني
+        # الكرت - وإلا KeyError وقت فتح النافذة.
+        transcribe_current = process_lecture._normalize_choice_key(
+            process_lecture.TRANSCRIBE_MODEL_CHOICE, transcribe_choices, process_lecture._LEGACY_TRANSCRIBE_KEYS,
+        )
+        summary_current = process_lecture._normalize_choice_key(
+            process_lecture.SUMMARY_MODEL_CHOICE, summary_choices, process_lecture._LEGACY_SUMMARY_KEYS,
+        )
+
         self._transcribe_model_var = _add_choice_card(
             "🎙", "Speech-to-Text Model", "Used to transcribe recorded audio into raw text.",
             PALETTE["info"],
-            process_lecture.TRANSCRIBE_MODEL_CHOICES,
-            process_lecture.TRANSCRIBE_MODEL_CHOICE,
+            transcribe_choices,
+            transcribe_current,
             self._on_transcribe_model_changed,
             last_used_getter=lambda: process_lecture.LAST_USED_TRANSCRIBE_PROVIDER,
             default_auto_provider="groq",  # أول مزوّد في سلسلة fallback التفريغ الافتراضية
@@ -1229,8 +1329,8 @@ class StudyApp:
         self._summary_model_var = _add_choice_card(
             "🧠", "Summarization / Notes Model", "Used to turn the transcript into organized notes.",
             PALETTE["success"],
-            process_lecture.SUMMARY_MODEL_CHOICES,
-            process_lecture.SUMMARY_MODEL_CHOICE,
+            summary_choices,
+            summary_current,
             self._on_summary_model_changed,
             last_used_getter=lambda: process_lecture.LAST_USED_SUMMARY_PROVIDER,
             default_auto_provider="gemini",  # أول مزوّد في سلسلة fallback التلخيص الافتراضية
@@ -1242,6 +1342,163 @@ class StudyApp:
             bg=PALETTE["bg"], fg=PALETTE["text_muted"],
             font=("Segoe UI", 8, "italic"), justify="left", wraplength=WIDTH - 40,
         ).pack(anchor="w", pady=(2, 4))
+
+        # ---------- فلو الموديلات (Auto) - "pill" chips مرقّمة ----------
+        # كل موديل: دايرة رقم صلبة + pill بخلفية فاتحة من نفس لون المزوّد،
+        # متوصلين بسهم، وبيلفّوا لسطر جديد تلقائي لو مش هيسعوا (مع علامة
+        # "↳" صغيرة آخر السطر اللي اتقطع). ده مرسوم يدوي على Canvas (مش
+        # Text) عشان نقدر نعمل شكل pill مستدير بخلفية لونية فعلية، مش
+        # مجرد نص ملوّن. البيانات لحظيًا من process_lecture.get_model_flow_items().
+        _PROVIDER_FLOW_COLOR = {
+            "gemini": PALETTE["accent"], "groq": PALETTE["info"], "nvidia": PALETTE["success"],
+        }
+
+        def _tint_toward_white(hex_color: str, amount: float) -> str:
+            """بيرجع نسخة أفتح من اللون (مخلوطة مع الأبيض) - amount من
+            0 (نفس اللون) لـ 1 (أبيض تمامًا). مستخدمة لخلفية الـ pill
+            الفاتحة من نفس درجة لون الدائرة الصلبة بتاعة الرقم."""
+            hex_color = hex_color.lstrip("#")
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            r = round(r + (255 - r) * amount)
+            g = round(g + (255 - g) * amount)
+            b = round(b + (255 - b) * amount)
+            return f"#{r:02x}{g:02x}{b:02x}"
+
+        def _rounded_rect(canvas: tk.Canvas, x1, y1, x2, y2, radius, **kwargs):
+            r = min(radius, (x2 - x1) / 2, (y2 - y1) / 2)
+            points = [
+                x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+                x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+                x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+            ]
+            return canvas.create_polygon(points, smooth=True, **kwargs)
+
+        _CHIP_FONT = ("Segoe UI", 9, "bold")
+        _NUM_FONT = ("Segoe UI", 8, "bold")
+        _ARROW_FONT = ("Segoe UI", 11)
+        _CIRCLE_D = 18
+        _PILL_H = 24
+        _PILL_PAD_L = _CIRCLE_D + 4   # مسافة النص جوه الـ pill بعد الدايرة
+        _PILL_PAD_R = 12
+        _ARROW_GAP = 6
+        _ROW_GAP = 10
+
+        def _build_flow_section(parent, icon: str, title: str) -> tk.Canvas:
+            section = tk.Frame(parent, bg=PALETTE["bg"])
+            section.pack(fill="x", pady=(4, 0))
+            tk.Label(
+                section, text=f"{icon} {title}",
+                bg=PALETTE["bg"], fg=PALETTE["text_muted"],
+                font=("Segoe UI", 8, "bold"), justify="left", anchor="w",
+            ).pack(anchor="w")
+            canvas = tk.Canvas(
+                section, bg=PALETTE["bg"], bd=0, highlightthickness=0,
+                height=_PILL_H + 4,  # هيتظبط فعليًا في _render_flow حسب عدد السطور
+            )
+            canvas.pack(fill="x", anchor="w", pady=(4, 0))
+            return canvas
+
+        flow_frame = tk.Frame(body, bg=PALETTE["bg"])
+        flow_frame.pack(fill="x", pady=(8, 4))
+
+        tk.Label(
+            flow_frame, text="Current Auto fallback order:",
+            bg=PALETTE["bg"], fg=PALETTE["text"],
+            font=("Segoe UI", 8, "bold"), justify="left", anchor="w",
+        ).pack(anchor="w", pady=(0, 2))
+
+        transcribe_flow_canvas = _build_flow_section(flow_frame, "🎙", "Speech-to-Text")
+        summary_flow_canvas = _build_flow_section(flow_frame, "🧠", "Summarization")
+
+        def _render_flow(canvas: tk.Canvas, items: list) -> None:
+            canvas.delete("all")
+            canvas_width = canvas.winfo_width()
+            if canvas_width <= 1:  # لسه مش متعروض فعليًا - استخدم عرض النافذة كتقدير
+                canvas_width = WIDTH - 40
+
+            if not items:
+                canvas.create_text(
+                    4, _PILL_H // 2 + 2, anchor="w",
+                    text="⚠ No models available - check your API keys.",
+                    fill=PALETTE["danger"], font=_CHIP_FONT,
+                )
+                canvas.configure(height=_PILL_H + 4)
+                return
+
+            measurer = tkfont.Font(font=_CHIP_FONT)
+            num_measurer = tkfont.Font(font=_NUM_FONT)
+            arrow_measurer = tkfont.Font(font=_ARROW_FONT)
+            arrow_w = arrow_measurer.measure("→")
+
+            # عرض كل شيب محسوب مرة واحدة الأول (pass مستقل) - عشان نقدر
+            # نعمل lookahead: "هل العنصر الجاي هيسع بعد سهم جنب ده ولا
+            # نلف سطر جديد؟" قبل ما نقرر نرسم سهم ولا علامة لفّ "↳".
+            chip_widths = [
+                _PILL_PAD_L + measurer.measure(label) + _PILL_PAD_R
+                for _, label in items
+            ]
+            arrow_total = _ARROW_GAP * 2 + arrow_w
+
+            start_x = 4
+            x = start_x
+            y = _PILL_H // 2 + 2
+
+            for i, (provider, label) in enumerate(items):
+                color = _PROVIDER_FLOW_COLOR.get(provider, PALETTE["text_muted"])
+                pill_bg = _tint_toward_white(color, 0.86)
+                chip_w = chip_widths[i]
+
+                pill_top, pill_bottom = y - _PILL_H / 2, y + _PILL_H / 2
+                _rounded_rect(
+                    canvas, x, pill_top, x + chip_w, pill_bottom, radius=_PILL_H / 2,
+                    fill=pill_bg, outline="",
+                )
+                circle_cx = x + _CIRCLE_D / 2 + 1
+                canvas.create_oval(
+                    circle_cx - _CIRCLE_D / 2, y - _CIRCLE_D / 2,
+                    circle_cx + _CIRCLE_D / 2, y + _CIRCLE_D / 2,
+                    fill=color, outline="",
+                )
+                canvas.create_text(circle_cx, y, text=str(i + 1), fill="#ffffff", font=_NUM_FONT)
+                canvas.create_text(
+                    x + _PILL_PAD_L, y, anchor="w", text=label,
+                    fill=PALETTE["text"], font=_CHIP_FONT,
+                )
+                x += chip_w
+
+                has_next = i < len(items) - 1
+                if not has_next:
+                    continue
+
+                next_w = chip_widths[i + 1]
+                if x + arrow_total + next_w <= canvas_width:
+                    # العنصر الجاي هيسع بعد السهم في نفس السطر - ارسم سهم عادي.
+                    canvas.create_text(
+                        x + _ARROW_GAP, y, anchor="w", text="→",
+                        fill=PALETTE["border"], font=_ARROW_FONT,
+                    )
+                    x += arrow_total
+                else:
+                    # مش هيسع - علامة لفّ بدل السهم (مش الاتنين مع بعض)، وننزل سطر جديد.
+                    canvas.create_text(
+                        x + 4, y, anchor="w", text="↳",
+                        fill=PALETTE["border"], font=_ARROW_FONT,
+                    )
+                    y += _PILL_H + _ROW_GAP
+                    x = start_x
+
+            canvas.configure(height=int(y + _PILL_H / 2 + 4))
+
+        def _refresh_flow_labels():
+            _render_flow(transcribe_flow_canvas, process_lecture.get_model_flow_items("transcribe"))
+            _render_flow(summary_flow_canvas, process_lecture.get_model_flow_items("summary"))
+
+        # ملحوظة مهمة: من غير ما نستناها لحد ما كل الـ widgets (بما فيها
+        # الـ footer تحت) تتبني والنافذة تتقاس مرة، عرض الـ canvas الفعلي
+        # (اللي بناء عليه بنحسب اللفّ) بيكون لسه مش مستقر. فبنأجّل أول
+        # نداء لحد نهاية بناء النافذة كلها، بعد أول win.update_idletasks()
+        # شامل - مش هنا.
+        self._refresh_model_flow_labels = _refresh_flow_labels
 
         footer = tk.Frame(win, bg=PALETTE["bg"])
         footer.pack(fill="x", padx=20, pady=(8, 18))
@@ -1255,6 +1512,17 @@ class StudyApp:
         )
         close_btn.pack(side="right")
 
+        win.update_idletasks()
+        # دلوقتي بس، بعد ما كل حاجة في النافذة اتبنت والـ layout استقر -
+        # نحسب ارتفاع صفوف الـ flow الفعلي (وممكن يغيّر حجم النافذة
+        # النهائي تحت، فده مقصود نفّذه قبل حساب w/h مباشرة).
+        #
+        # نداء مرتين عمدًا: لاحظنا فعليًا إن أول update_idletasks مش كفاية
+        # لـ Text widget معقّد (الـ wrap بيتحسب بقياس قديم/غير مستقر لسه)،
+        # ودورة تانية (idletasks + إعادة حساب) هي اللي بتدّي الارتفاع الصح.
+        self._refresh_model_flow_labels()
+        win.update_idletasks()
+        self._refresh_model_flow_labels()
         win.update_idletasks()
         w = win.winfo_reqwidth() + 4
         h = win.winfo_reqheight() + 4
@@ -1326,7 +1594,8 @@ class StudyApp:
         return result["saved"]
 
     def _on_transcribe_model_changed(self, choice_key: str):
-        provider = self._required_provider_for_choice(choice_key, process_lecture.TRANSCRIBE_MODEL_CHOICES)
+        transcribe_choices = process_lecture.get_transcribe_model_choices()
+        provider = self._required_provider_for_choice(choice_key, transcribe_choices)
         if provider and not self._provider_key_configured(provider):
             saved = self._prompt_for_missing_key_blocking(provider)
             if not saved:
@@ -1334,24 +1603,31 @@ class StudyApp:
                 # على موديل مش شغال، ونحدّث شكل الـ dropdown نفسه كمان.
                 choice_key = "auto"
                 if hasattr(self, "_transcribe_model_var"):
-                    self._transcribe_model_var.set(process_lecture.TRANSCRIBE_MODEL_CHOICES["auto"][0])
+                    self._transcribe_model_var.set(transcribe_choices["auto"][0])
                 self._log("🎙 اتلغى - رجع موديل التفريغ لـ Auto.")
 
         process_lecture.set_transcribe_model_choice(choice_key)
-        self._log(f"🎙 موديل التفريغ اتغيّر لـ: {process_lecture.TRANSCRIBE_MODEL_CHOICES[choice_key][0]}")
+        label = process_lecture.get_transcribe_model_choices().get(choice_key, (choice_key,))[0]
+        self._log(f"🎙 موديل التفريغ اتغيّر لـ: {label}")
+        if hasattr(self, "_refresh_model_flow_labels"):
+            self._refresh_model_flow_labels()
 
     def _on_summary_model_changed(self, choice_key: str):
-        provider = self._required_provider_for_choice(choice_key, process_lecture.SUMMARY_MODEL_CHOICES)
+        summary_choices = process_lecture.get_summary_model_choices()
+        provider = self._required_provider_for_choice(choice_key, summary_choices)
         if provider and not self._provider_key_configured(provider):
             saved = self._prompt_for_missing_key_blocking(provider)
             if not saved:
                 choice_key = "auto"
                 if hasattr(self, "_summary_model_var"):
-                    self._summary_model_var.set(process_lecture.SUMMARY_MODEL_CHOICES["auto"][0])
+                    self._summary_model_var.set(summary_choices["auto"][0])
                 self._log("🧠 اتلغى - رجع موديل التلخيص لـ Auto.")
 
         process_lecture.set_summary_model_choice(choice_key)
-        self._log(f"🧠 موديل التلخيص اتغيّر لـ: {process_lecture.SUMMARY_MODEL_CHOICES[choice_key][0]}")
+        label = process_lecture.get_summary_model_choices().get(choice_key, (choice_key,))[0]
+        self._log(f"🧠 موديل التلخيص اتغيّر لـ: {label}")
+        if hasattr(self, "_refresh_model_flow_labels"):
+            self._refresh_model_flow_labels()
 
     # ---------------------------------------------------------- Lectures
     def _refresh_lecture_list(self):
@@ -1367,22 +1643,186 @@ class StudyApp:
         self._refresh_chunks()
 
     def _new_lecture_dialog(self):
+        """نقطة البداية الجديدة: شاشة اختيار بكارتين (محاضرة/اجتماع) -
+        وبناءً على الاختيار، بتفتح الشاشة المخصصة المناسبة."""
         win = tk.Toplevel(self.root)
-        win.title("محاضرة/جلسة جديدة")
+        win.title("جلسة جديدة")
+        win.configure(bg=PALETTE["bg"])
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+
+        WIDTH = 440
+        header = tk.Frame(win, bg=PALETTE["accent"], width=WIDTH)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=52)
+        tk.Label(
+            header, text="✨  جلسة جديدة", bg=PALETTE["accent"], fg="white",
+            font=("Segoe UI", 13, "bold"), anchor="e", justify="right",
+        ).pack(fill="x", padx=20, pady=13)
+
+        body = tk.Frame(win, bg=PALETTE["bg"])
+        body.pack(fill="both", expand=True, padx=24, pady=24)
+
+        ttk.Label(
+            body, text="إيه نوع الجلسة اللي عايز تسجّلها؟", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 11, "bold"),
+            justify="right", anchor="e",
+        ).pack(fill="x", pady=(0, 18))
+
+        # بدون fill="x": الفريم بياخد عرض محتواه بس (الكارتين + المسافة
+        # بينهم)، وده اللي بيخلي pack يتوسّطه أفقيًا تلقائيًا جوه body
+        # (السلوك الافتراضي). كان فيه fill="x" قبل كده، فالكارتين كانوا
+        # بيتلزقوا بالكامل على يمين المساحة (side="right") وتفضل فجوة
+        # فاضية ظاهرة على الشمال بس.
+        cards_row = tk.Frame(body, bg=PALETTE["bg"])
+        cards_row.pack()
+
+        def _make_type_card(parent, icon, title, subtitle, color, color_dark, on_click):
+            card = tk.Frame(parent, bg=color, cursor="hand2", width=180, height=170)
+            card.pack_propagate(False)
+            icon_lbl = tk.Label(card, text=icon, bg=color, fg="white", font=("Segoe UI", 34))
+            icon_lbl.pack(pady=(26, 6))
+            title_lbl = tk.Label(card, text=title, bg=color, fg="white", font=("Segoe UI", 13, "bold"))
+            title_lbl.pack()
+            sub_lbl = tk.Label(card, text=subtitle, bg=color, fg=_faded_white(color), font=("Segoe UI", 8))
+            sub_lbl.pack(pady=(4, 0))
+
+            widgets = (card, icon_lbl, title_lbl, sub_lbl)
+
+            def _enter(_e=None):
+                for w in widgets:
+                    w.configure(bg=color_dark)
+
+            def _leave(_e=None):
+                for w in widgets:
+                    w.configure(bg=color)
+
+            for w in widgets:
+                w.bind("<Enter>", _enter)
+                w.bind("<Leave>", _leave)
+                w.bind("<Button-1>", lambda _e: on_click())
+
+            return card
+
+        # ألوان الكروت دي متطابقة عمدًا مع ألوان زراير "فرّغ + اشرح
+        # المحاضرة" (success/أخضر) و"فرّغ + لخّص الاجتماع" (info/أزرق) في
+        # الشاشة الرئيسية - عشان اللون يبقى "هوية" ثابتة لنوع الجلسة في
+        # كل البرنامج، مش بس في الشاشة دي.
+        lecture_card = _make_type_card(
+            cards_row, "📚", "محاضرة", "شرح وتعليم",
+            PALETTE["success"], PALETTE["success_dark"],
+            lambda: (win.destroy(), self._lecture_session_dialog()),
+        )
+        lecture_card.pack(side="right", padx=(10, 0))
+
+        meeting_card = _make_type_card(
+            cards_row, "🗣", "اجتماع", "نقاش وقرارات",
+            PALETTE["info"], PALETTE["info_dark"],
+            lambda: (win.destroy(), self._meeting_session_dialog()),
+        )
+        meeting_card.pack(side="right")
+
+        win.update_idletasks()
+        w, h = win.winfo_reqwidth() + 4, win.winfo_reqheight() + 4
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        screen_w, screen_h = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = max(0, min(x, screen_w - w))
+        y = max(0, min(y, screen_h - h))
+        win.geometry(f"{w}x{h}+{x}+{y}")
+
+    # أيقونة+لون+نص قصير لعرضهم كـ checkbox - النص الكامل الفعلي اللي
+    # بيتبعت للموديل موجود في prompts._LECTURE_EXTRA_OPTIONS (مش هنا،
+    # عشان ميتكررش في مكانين). الترتيب هنا لازم يطابق ترتيب الكروت في
+    # prompts._LECTURE_EXTRA_OPTIONS بالظبط لكل مجال.
+    _LECTURE_EXTRA_LABELS = {
+        "برمجة/علوم حاسب": (
+            ("✂", "#8e44ad", "انسخ أي كود/مثال برمجي بالظبط"),
+            ("🎯", "#c0392b", "سؤال إنترفيو محتمل"),
+        ),
+        "هندسة": (
+            ("📐", "#2980b9", "خطوات الحل/الاشتقاق كاملة"),
+            ("💡", "#f1c40f", "تطبيقات عملية"),
+            ("🎯", "#c0392b", "سؤال إنترفيو محتمل"),
+        ),
+        "طب": (
+            ("🧪", "#16a085", "تفريق بين تشخيصات متشابهة"),
+            ("💡", "#f1c40f", "مصادر مراجعة عامة"),
+        ),
+        "قانون": (
+            ("📋", "#8e44ad", "استثناءات عن القاعدة العامة"),
+            ("💡", "#f1c40f", "مجالات تطبيق عملي"),
+        ),
+        "إدارة أعمال": (
+            ("📊", "#2980b9", "تفصيل كامل لأي Case Study"),
+            ("💡", "#f1c40f", "أدوات/أطر عمل مرتبطة"),
+        ),
+        "لغات": (
+            ("✍", "#16a085", "تصحيح أخطاء الأمثلة المكتوبة"),
+            ("💡", "#f1c40f", "طرق تدريب وممارسة"),
+        ),
+        "رياضيات وعلوم": (
+            ("📐", "#2980b9", "خطوات الحل/الإثبات كاملة"),
+            ("💡", "#f1c40f", "تطبيقات في مجالات تانية"),
+        ),
+        "علوم إنسانية وتاريخ": (
+            ("🔗", "#16a085", "روابط سبب-نتيجة صريحة"),
+            ("💡", "#f1c40f", "مصادر وقراءات إضافية"),
+        ),
+    }
+
+    def _lecture_session_dialog(self):
+        """الشاشة القديمة بالظبط (اسم + مجال المحاضرة + خيارات التصحيح/
+        الإضافات) - من غير أي تغيير في المحتوى، غير مصدر الفتح."""
+        win = tk.Toplevel(self.root)
+        win.title("محاضرة جديدة")
         win.configure(bg=PALETTE["bg"])
         win.resizable(False, False)
         win.transient(self.root)
         win.grab_set()
 
         WIDTH = 420
-        header = tk.Frame(win, bg=PALETTE["accent"], width=WIDTH)
+        header = tk.Frame(win, bg=PALETTE["success"], width=WIDTH)
         header.pack(fill="x")
         header.pack_propagate(False)
         header.configure(height=52)
+        header_inner = tk.Frame(header, bg=PALETTE["success"])
+        header_inner.pack(fill="x", padx=20, pady=13)
         tk.Label(
-            header, text="➕  محاضرة/جلسة جديدة", bg=PALETTE["accent"], fg="white",
-            font=("Segoe UI", 13, "bold"), anchor="e", justify="right",
-        ).pack(fill="x", padx=20, pady=13)
+            header_inner, text="📚  محاضرة جديدة", bg=PALETTE["success"], fg="white",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(side="right")
+        back_lbl = tk.Label(
+            header_inner, text="← رجوع", bg=PALETTE["success"], fg=_faded_white(PALETTE["success"]),
+            font=("Segoe UI", 9), cursor="hand2",
+        )
+        back_lbl.pack(side="left")
+        back_lbl.bind("<Button-1>", lambda _e: (win.destroy(), self._new_lecture_dialog()))
+
+        _win_pos = {}
+
+        def _fit_window(recenter=True):
+            """بتعيد حساب وضبط حجم النافذة على حسب المحتوى الفعلي دلوقتي
+            (مش مرة واحدة بس وقت الفتح) - لازم تتنادى كل مرة محتوى body
+            بيتغيّر (زي ظهور/اختفاء حقل "أخرى...") عشان النافذة تكبر/تصغر
+            فعليًا بدل ما pack يضغط آخر حاجة اتعملها (الأزرار) جوه نفس
+            الحجم القديم الثابت.
+            recenter=False: بيحافظ على نفس x/y القديمة (يكبّر لتحت بس من
+            غير ما يقفز في مكانه)."""
+            win.update_idletasks()
+            w, h = win.winfo_reqwidth() + 4, win.winfo_reqheight() + 4
+            screen_w, screen_h = win.winfo_screenwidth(), win.winfo_screenheight()
+            if recenter or "x" not in _win_pos:
+                x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+                y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+            else:
+                x, y = _win_pos["x"], _win_pos["y"]
+            x = max(0, min(x, screen_w - w))
+            y = max(0, min(y, screen_h - h))
+            _win_pos["x"], _win_pos["y"] = x, y
+            win.geometry(f"{w}x{h}+{x}+{y}")
 
         body = tk.Frame(win, bg=PALETTE["bg"])
         body.pack(fill="both", expand=True, padx=20, pady=(16, 8))
@@ -1408,9 +1848,14 @@ class StudyApp:
             font=("Segoe UI", 8), justify="right", wraplength=WIDTH - 40,
         ).pack(anchor="e", pady=(2, 6))
 
-        subject_options = [process_lecture.DEFAULT_SUBJECT_LABEL] + list(
-            process_lecture.SUBJECT_PROFILES.keys()
-        ) + ["أخرى..."]
+        # DEFAULT_SUBJECT_LABEL بقى key فعلي جوه SUBJECT_PROFILES نفسه
+        # (مش حالة خاصة منفصلة زي الأول) - من غير الفلترة دي كان هيظهر
+        # مرتين في القايمة (مرة كـ"افتراضي" في الأول، ومرة تانية من جوه
+        # .keys()).
+        subject_options = [process_lecture.DEFAULT_SUBJECT_LABEL] + [
+            s for s in process_lecture.SUBJECT_PROFILES.keys()
+            if s != process_lecture.DEFAULT_SUBJECT_LABEL
+        ] + ["أخرى..."]
         subject_var = tk.StringVar(value=process_lecture.DEFAULT_SUBJECT_LABEL)
         subject_combo = ttk.Combobox(
             body, textvariable=subject_var, values=subject_options,
@@ -1426,31 +1871,40 @@ class StudyApp:
                 other_entry.pack(anchor="e", fill="x", pady=(6, 0))
             else:
                 other_entry.pack_forget()
-
-        subject_combo.bind("<<ComboboxSelected>>", _on_subject_changed)
+            # النافذة resizable(False, False) بحجم ثابت اتحسب وقت الفتح -
+            # لو ظهر الحقل ده بعد كده من غير ما نعيد حساب الحجم، مفيش
+            # مساحة كافية للمحتوى الجديد، فـ pack بيضغط آخر حاجة اتعملها
+            # (زرارين إنشاء/إلغاء) عشان يحشرها - وده اللي كان بيخلّيهم
+            # يصغروا. _fit_window() (معرّفة تحت) بتكبّر/تصغّر النافذة
+            # فعليًا بدل ما تسيب pack يضغط المحتوى.
+            _fit_window(recenter=False)
 
         ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(14, 10))
 
+        # "صحّح المعلومات الغلط بوضوح" بقت صندوق أساسي دايمًا شغال (مش
+        # اختياري بعد كده) - مفيش checkbox ليها هنا خالص. الباقي: 💬
+        # (عام، اختياري، افتراضيًا False) + كروت خاصة بالمجال المختار
+        # (افتراضيًا True - بتتغيّر تلقائي كل ما المجال يتغيّر).
         ttk.Label(
-            body, text="خيارات إضافية للنوتس (اختياري):", background=PALETTE["bg"],
+            body, text="خيارات إضافية للنوتس:", background=PALETTE["bg"],
             foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
         ).pack(anchor="e")
         ttk.Label(
             body,
-            text="بتتفعّل بس لو حبيت، ونادرًا ما بتظهر حتى لو مفعّلة - أغلب "
-                 "المحاضرات مش هتحتاجهم، وده طبيعي 100%.",
+            text="كروت المجال مفعّلة افتراضيًا (قيمتها عالية ومخاطرها قليلة) "
+                 "- اطفي أي واحد منها لو مش عايزه. \"إضافة من المدوّن\" "
+                 "اختيارية ونادرًا ما بتظهر حتى لو مفعّلة.",
             background=PALETTE["bg"], foreground=PALETTE["text_muted"],
             font=("Segoe UI", 8), justify="right", wraplength=WIDTH - 40,
         ).pack(anchor="e", pady=(2, 8))
 
-        corrections_var = tk.BooleanVar(value=False)
         additions_var = tk.BooleanVar(value=False)
 
-        def _build_option_row(var, icon, icon_color, text, tooltip):
+        def _build_option_row(parent, var, icon, icon_color, text, tooltip=None):
             # الإيموجي بيتحط في Label منفصل (مش جوه نص الـ Checkbutton
             # نفسه) - Tkinter بيرندر إيموجي داخل نص الـ Checkbutton بشكل
             # مكسور أحيانًا على ويندوز، لكن جوه Label عادي بيشتغل تمام.
-            row = tk.Frame(body, bg=PALETTE["bg"])
+            row = tk.Frame(parent, bg=PALETTE["bg"])
             row.pack(fill="x", anchor="e", pady=(0, 6))
             check = tk.Checkbutton(
                 row, variable=var, bg=PALETTE["bg"], activebackground=PALETTE["bg"],
@@ -1464,22 +1918,44 @@ class StudyApp:
                 font=("Segoe UI", 9), justify="right", anchor="e", wraplength=WIDTH - 80,
             )
             text_label.pack(side="right", fill="x", expand=True)
-            for w in (check, icon_label, text_label):
-                _add_tooltip(w, tooltip)
+            if tooltip:
+                for w in (check, icon_label, text_label):
+                    _add_tooltip(w, tooltip)
 
         _build_option_row(
-            corrections_var, "🔧", "#e67e22",
-            "صحّح المعلومات الغلط بوضوح (لو المحاضر قال حاجة غلط فعلاً)",
-            "بيضيف صندوق 🔧 بس لو المحاضر قال معلومة غلط factually بشكل "
-            "مؤكد (رقم غلط، قانون علمي خطأ، تسمية غلط) - مش لمجرد رأي أو "
-            "تبسيط متعمد.",
-        )
-        _build_option_row(
-            additions_var, "💬", "#16a085",
+            body, additions_var, "💬", "#16a085",
             "اسمح بإضافات بسيطة ومفيدة من معرفة عامة",
             "بيضيف صندوق 💬 بس لو فيه معلومة قصيرة هتوضّح نقطة المحاضر "
             "فعليًا - مش حشو أو تكرار لحاجة اتقالت بالفعل.",
         )
+
+        extra1_var = tk.BooleanVar(value=True)
+        extra2_var = tk.BooleanVar(value=True)
+        extra3_var = tk.BooleanVar(value=True)
+        extras_frame = tk.Frame(body, bg=PALETTE["bg"])
+        extras_frame.pack(fill="x")
+
+        def _rebuild_lecture_extras(*_):
+            for child in extras_frame.winfo_children():
+                child.destroy()
+            subject_key = (
+                process_lecture.DEFAULT_SUBJECT_LABEL if subject_var.get() == process_lecture.DEFAULT_SUBJECT_LABEL
+                else subject_var.get()
+            )
+            labels = self._LECTURE_EXTRA_LABELS.get(subject_key)
+            if not labels:
+                ttk.Label(
+                    extras_frame, text="(مفيش كروت خاصة لمجال \"أخرى\")",
+                    background=PALETTE["bg"], foreground=PALETTE["text_muted"],
+                    font=("Segoe UI", 8), justify="right",
+                ).pack(anchor="e")
+            else:
+                for var, (icon, icon_color, text) in zip((extra1_var, extra2_var, extra3_var), labels):
+                    _build_option_row(extras_frame, var, icon, icon_color, text)
+            _fit_window(recenter=False)
+
+        subject_combo.bind("<<ComboboxSelected>>", lambda e: (_on_subject_changed(), _rebuild_lecture_extras()))
+        _rebuild_lecture_extras()
 
         footer = tk.Frame(win, bg=PALETTE["bg"])
         footer.pack(fill="x", padx=20, pady=(14, 18))
@@ -1502,8 +1978,10 @@ class StudyApp:
             clean = safe_name(name)
             state = load_state(clean)
             state["subject"] = subject
-            state["enable_corrections"] = corrections_var.get()
             state["enable_additions"] = additions_var.get()
+            state["lecture_extra1"] = extra1_var.get()
+            state["lecture_extra2"] = extra2_var.get()
+            state["lecture_extra3"] = extra3_var.get()
             save_state(clean, state)
 
             values = list(self.lecture_combo["values"])
@@ -1520,6 +1998,299 @@ class StudyApp:
         self._outline_button(footer, "إلغاء", win.destroy, PALETTE["text_muted"]).pack(side="right")
 
         name_entry.bind("<Return>", lambda e: _create())
+
+        _fit_window(recenter=True)
+
+    # خيارات إضافية مختصرة لعرضها في الواجهة لكل مجال اجتماع - النص
+    # الكامل المستخدم فعليًا جوه البرومبت موجود في prompts.py
+    # (_MEETING_EXTRA_OPTIONS)؛ هنا بس تسميات قصيرة تتعرض كـ Checkbox.
+    # (أيقونة، لون الأيقونة، النص) لكل خيار - بنفس أسلوب خيارات المحاضرة
+    # (_build_option_row): أيقونة ملوّنة منفصلة عن النص بدل ما تتلزّق جواه،
+    # عشان الشكل يبقى موحّد بين الشاشتين.
+    _MEETING_EXTRA_LABELS = {
+        "مشروع طلابي/تخرج": (
+            ("💡", "#f1c40f", "اقتراحات (راجعها بنفسك)"),
+            ("🔗", "#2980b9", "مشاريع مشابهة (راجعها بنفسك)"),
+        ),
+        "تقني/تطوير": (
+            ("✂", "#8e44ad", "انسخ أي كود/Config بالظبط"),
+            ("🔍", "#16a085", "حدد قرارات محتاجة مراجعة تقنية"),
+        ),
+        "عمل/شركة عام": (
+            ("📊", "#2980b9", "افصل الاستراتيجي عن التشغيلي"),
+            ("💰", "#e67e22", "وضّح أي طلبات ميزانية/موارد"),
+        ),
+        "عرض/متابعة": (
+            ("🚧", "#c0392b", "اعرض الـ Blockers بس"),
+            ("📈", "#16a085", "قارن بالتحديث السابق لو مذكور"),
+        ),
+    }
+
+    def _meeting_session_dialog(self):
+        win = tk.Toplevel(self.root)
+        win.title("اجتماع جديد")
+        win.configure(bg=PALETTE["bg"])
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+
+        WIDTH = 440
+        header = tk.Frame(win, bg=PALETTE["info"], width=WIDTH)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=52)
+        header_inner = tk.Frame(header, bg=PALETTE["info"])
+        header_inner.pack(fill="x", padx=20, pady=13)
+        tk.Label(
+            header_inner, text="🗣  اجتماع جديد", bg=PALETTE["info"], fg="white",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(side="right")
+        back_lbl = tk.Label(
+            header_inner, text="← رجوع", bg=PALETTE["info"], fg=_faded_white(PALETTE["info"]),
+            font=("Segoe UI", 9), cursor="hand2",
+        )
+        back_lbl.pack(side="left")
+        back_lbl.bind("<Button-1>", lambda _e: (win.destroy(), self._new_lecture_dialog()))
+
+        # المحتوى بيكبر ديناميكيًا (كل "+ إضافة حاضر" بيضيف صف جديد) لحد
+        # ما يتعدى طول الشاشة بكتير - فبدل ما نحسب حجم النافذة مرة واحدة
+        # بس وقت الفتح (زي ما كان بيحصل قبل كده، وبيخلي زرار "إنشاء" يطلع
+        # برّه حدود النافذة الظاهرة أول ما يتضاف حاضرين كتير)، المحتوى هنا
+        # جوه Canvas قابل للتمرير بارتفاع أقصى ثابت، والـ footer (إنشاء/
+        # إلغاء) ثابت تحت بره الـ scroll عشان يفضل متاح دايمًا.
+        # padx=(0, 20) مش (20, 20): الـ 0 هنا يسيب الـ scrollbar ملاصق
+        # لحافة النافذة الشمال تمامًا (بدل ما يطلع عايم بفجوة 20px زيه
+        # زي باقي المحتوى - شكله كان غريب لأنه عنصر تحكم للنافذة كلها مش
+        # جزء من النص). الـ 20 على اليمين لسه موجودة عشان تفضل متوافقة مع
+        # هوامش الهيدر/الفوتر.
+        body_outer = tk.Frame(win, bg=PALETTE["bg"])
+        body_outer.pack(fill="both", expand=True, padx=(0, 20), pady=(16, 8))
+
+        body_canvas = tk.Canvas(body_outer, bg=PALETTE["bg"], highlightthickness=0)
+        body_scrollbar = ttk.Scrollbar(body_outer, orient="vertical", command=body_canvas.yview)
+        body_canvas.configure(yscrollcommand=body_scrollbar.set)
+        body_scrollbar.pack(side="left", fill="y")
+        # padx=(6, 0) على الـ canvas نفسه: مسافة تنفّس بسيطة بين الـ
+        # scrollbar والمحتوى (Entry/Label) من غير ما تبعد الـ scrollbar
+        # عن حافة النافذة.
+        body_canvas.pack(side="right", fill="both", expand=True, padx=(6, 0))
+
+        body = tk.Frame(body_canvas, bg=PALETTE["bg"])
+        body_window = body_canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _on_body_configure(_e=None):
+            body_canvas.configure(scrollregion=body_canvas.bbox("all"))
+
+        def _on_canvas_configure(e):
+            # الفريم الداخلي ياخد عرض الـ canvas بالظبط عشان العناصر
+            # اللي جواه (زي fill="x") تتمدد صح.
+            body_canvas.itemconfigure(body_window, width=e.width)
+
+        body.bind("<Configure>", _on_body_configure)
+        body_canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(e):
+            body_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+
+        # bind_all بدل bind عادي: MouseWheel بتتبعت للـ widget اللي تحت
+        # الماوس فعليًا (زي Entry/Label جوه الفريم) مش للـ canvas نفسه، فلو
+        # عملنا bind على الـ canvas بس مش هياخد الحدث أول ما الماوس يبقى
+        # فوق أي عنصر جواه. بما إن النافذة دي modal (grab_set)، مفيش خطر
+        # إنها تلخبط نوافذ تانية وهي مفتوحة - وبنشيل الربط فورًا لحظة ما
+        # الـ canvas نفسه بيتدمر (أي مسار قفل: إنشاء/إلغاء/رجوع/X) عشان
+        # الربط العام ده ميفضلش شغال على الـ canvas بعد ما يختفي.
+        body_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        body_canvas.bind("<Destroy>", lambda _e: body_canvas.unbind_all("<MouseWheel>"))
+
+        ttk.Label(
+            body, text="اسم الاجتماع:", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="e")
+        name_var = tk.StringVar()
+        name_entry = ttk.Entry(body, textvariable=name_var, width=40, justify="right")
+        name_entry.pack(anchor="e", fill="x", pady=(4, 14))
+        name_entry.focus_set()
+
+        ttk.Label(
+            body, text="مجال الاجتماع:", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="e")
+
+        meeting_domains = list(process_lecture.MEETING_SUBJECT_PROFILES.keys()) + ["أخرى..."]
+        domain_var = tk.StringVar(value=meeting_domains[0])
+        domain_combo = ttk.Combobox(
+            body, textvariable=domain_var, values=meeting_domains,
+            state="readonly", width=38, justify="right",
+        )
+        domain_combo.pack(anchor="e", fill="x", pady=(4, 0))
+
+        other_domain_var = tk.StringVar()
+        other_domain_entry = ttk.Entry(body, textvariable=other_domain_var, width=40, justify="right")
+
+        ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(16, 10))
+
+        ttk.Label(
+            body, text="الحاضرين:", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="e", pady=(0, 8))
+
+        attendees_frame = tk.Frame(body, bg=PALETTE["bg"])
+        attendees_frame.pack(fill="x")
+        attendee_rows = []  # [(name_var, role_var, is_host)]
+
+        def _add_attendee_row(is_host: bool = False):
+            row = tk.Frame(attendees_frame, bg=PALETTE["bg"])
+            row.pack(fill="x", pady=(0, 6), before=add_btn_holder)
+
+            label_text = "👤 المضيف/المسؤول الأساسي" if is_host else "👤 حاضر"
+            ttk.Label(
+                row, text=label_text, background=PALETTE["bg"],
+                foreground=PALETTE["text"], font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="e")
+
+            fields = tk.Frame(row, bg=PALETTE["bg"])
+            fields.pack(fill="x", pady=(2, 0))
+            role_var = tk.StringVar()
+            role_entry = ttk.Entry(fields, textvariable=role_var, width=16, justify="right")
+            role_entry.pack(side="left", padx=(0, 6))
+            ttk.Label(fields, text="الدور:", background=PALETTE["bg"], foreground=PALETTE["text"]).pack(side="left")
+            name_var2 = tk.StringVar()
+            name_entry2 = ttk.Entry(fields, textvariable=name_var2, width=18, justify="right")
+            name_entry2.pack(side="right", padx=(6, 0))
+            ttk.Label(fields, text="الاسم:", background=PALETTE["bg"], foreground=PALETTE["text"]).pack(side="right")
+
+            attendee_rows.append((name_var2, role_var, is_host))
+
+        add_btn_holder = tk.Frame(attendees_frame, bg=PALETTE["bg"])
+        add_btn_holder.pack(fill="x")
+
+        _add_attendee_row(is_host=True)  # المضيف دايمًا أول صف، ثابت
+
+        add_attendee_btn = self._outline_button(
+            add_btn_holder, "+ إضافة حاضر",
+            lambda: _add_attendee_row(is_host=False), PALETTE["accent"],
+        )
+        add_attendee_btn.pack(anchor="e", pady=(4, 0))
+
+        ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(16, 10))
+
+        ttk.Label(
+            body, text="خيارات إضافية (حسب المجال المختار):", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="e")
+
+        extra1_var = tk.BooleanVar(value=False)
+        extra2_var = tk.BooleanVar(value=False)
+        extras_frame = tk.Frame(body, bg=PALETTE["bg"])
+        extras_frame.pack(fill="x", pady=(6, 0))
+
+        def _rebuild_extras(*_):
+            for child in extras_frame.winfo_children():
+                child.destroy()
+            domain = domain_var.get()
+            labels = self._MEETING_EXTRA_LABELS.get(domain)
+            if not labels:
+                ttk.Label(
+                    extras_frame, text="(مفيش خيارات إضافية لمجال \"أخرى\")",
+                    background=PALETTE["bg"], foreground=PALETTE["text_muted"],
+                    font=("Segoe UI", 8), justify="right",
+                ).pack(anchor="e")
+                return
+            for var, (icon, icon_color, text) in ((extra1_var, labels[0]), (extra2_var, labels[1])):
+                row = tk.Frame(extras_frame, bg=PALETTE["bg"])
+                row.pack(fill="x", anchor="e", pady=(0, 4))
+                tk.Checkbutton(
+                    row, variable=var, bg=PALETTE["bg"], activebackground=PALETTE["bg"],
+                    selectcolor=PALETTE["card"], cursor="hand2",
+                ).pack(side="right")
+                # الأيقونة في Label منفصل عن النص (مش جوه نفس الـ Label) -
+                # نفس أسلوب خيارات المحاضرة (_build_option_row) عشان
+                # الشكل يبقى موحّد بين الشاشتين.
+                tk.Label(
+                    row, text=icon, bg=PALETTE["bg"], fg=icon_color, font=("Segoe UI", 12),
+                ).pack(side="right", padx=(0, 4))
+                tk.Label(
+                    row, text=text, bg=PALETTE["bg"], fg=PALETTE["text"],
+                    font=("Segoe UI", 9), justify="right", anchor="e",
+                ).pack(side="right", fill="x", expand=True)
+
+        def _on_domain_changed(*_):
+            if domain_var.get() == "أخرى...":
+                other_domain_entry.pack(anchor="e", fill="x", pady=(6, 0))
+            else:
+                other_domain_entry.pack_forget()
+            _rebuild_extras()
+
+        domain_combo.bind("<<ComboboxSelected>>", _on_domain_changed)
+        _rebuild_extras()
+
+        footer = tk.Frame(win, bg=PALETTE["bg"])
+        footer.pack(fill="x", padx=20, pady=(14, 18))
+
+        def _create():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("تنبيه", "لازم تكتب اسم للاجتماع.", parent=win)
+                return
+
+            chosen_domain = domain_var.get()
+            if chosen_domain == "أخرى...":
+                custom = other_domain_var.get().strip()
+                domain = custom if custom else ""
+            else:
+                domain = chosen_domain
+
+            # نبني نص الحاضرين الجاهز للبرومبت: المضيف الأول دايمًا،
+            # وبعده أي حاضرين إضافيين اتكتبوا (اسم و/أو دور، الاتنين
+            # اختياريين، نص فاضي بالكامل بيتجاهل الصف كله).
+            lines = []
+            for name_v, role_v, is_host in attendee_rows:
+                nm, rl = name_v.get().strip(), role_v.get().strip()
+                if not nm and not rl:
+                    continue
+                prefix = "المضيف/المسؤول" if is_host else "حاضر"
+                if nm and rl:
+                    lines.append(f"{prefix}: {nm} ({rl})")
+                elif nm:
+                    lines.append(f"{prefix}: {nm}")
+                else:
+                    lines.append(f"{prefix}: (الدور بس) {rl}")
+            attendees_context = "\n".join(lines)
+
+            clean = safe_name(name)
+            state = load_state(clean)
+            state["meeting_domain"] = domain
+            state["attendees"] = attendees_context
+            state["meeting_extra1"] = extra1_var.get()
+            state["meeting_extra2"] = extra2_var.get()
+            save_state(clean, state)
+
+            values = list(self.lecture_combo["values"])
+            if clean not in values:
+                self.lecture_combo["values"] = values + [clean]
+            self.lecture_combo.set(clean)
+            self._on_lecture_change()
+            win.destroy()
+
+        create_btn = self._card_button(
+            footer, "✓ إنشاء", _create, PALETTE["accent"], PALETTE["accent_dark"],
+        )
+        create_btn.pack(side="left")
+        self._outline_button(footer, "إلغاء", win.destroy, PALETTE["text_muted"]).pack(side="right")
+
+        name_entry.bind("<Return>", lambda e: _create())
+
+        # بنحسب ارتفاع المحتوى الطبيعي (body.winfo_reqheight) مستقل عن
+        # ارتفاع الـ canvas نفسه - وبعدين نحدد ارتفاع الـ canvas الظاهر بحد
+        # أقصى ثابت (MAX_BODY_HEIGHT): لو المحتوى أصغر منه بيتعرض كامل من
+        # غير scroll خالص (زي الوضع الطبيعي لصف حاضر واحد بس)، ولو أكبر
+        # (بعد ما اليوزر يضيف كذا حاضر) الـ scrollbar هو اللي بيكبر مش
+        # النافذة - فزرار "إنشاء" يفضل متاح دايمًا بره الـ scroll.
+        win.update_idletasks()
+        body_canvas.configure(scrollregion=body_canvas.bbox("all"))
+        MAX_BODY_HEIGHT = 380
+        natural_h = body.winfo_reqheight()
+        body_canvas.configure(height=min(natural_h, MAX_BODY_HEIGHT))
 
         win.update_idletasks()
         w, h = win.winfo_reqwidth() + 4, win.winfo_reqheight() + 4
@@ -1695,9 +2466,21 @@ class StudyApp:
             ):
                 return
 
+        # بنوضّح من رقم الجزء هيكمل - لو فيه أجزاء متسجلة بالفعل لنفس
+        # المحاضرة (من جلسة قبل كده اتقفلت)، التسجيل الجديد بيكمل الترقيم
+        # تلقائي (مش بيبدأ من Part 01 تاني ولا بيكتب فوق حاجة قديمة)،
+        # بس من غير ما نوضّح ده في رسالة التأكيد، سهل اليوزر يقلق إنه
+        # هيفقد/يكتب فوق الأجزاء القديمة - خصوصًا لو اسم المحاضرة نفسه
+        # فيه كلمة زي "part" وتدّي انطباع إنها بتتكلم عن ترقيم الأجزاء.
+        next_part = _next_part_number(lecture)
+        if next_part > 1:
+            part_note = f"\n(فيه {next_part - 1} جزء متسجل بالفعل - التسجيل الجديد هيكمل من Part {next_part:02d}.)"
+        else:
+            part_note = ""
+
         if not ask_yesno(
             "تأكيد التسجيل",
-            f"هتسجل على المحاضرة/الجلسة:\n\n« {lecture} »\n\nمتأكد إن ده صح؟",
+            f"هتسجل على المحاضرة/الجلسة:\n\n« {_isolate_ltr_runs_label(lecture)} »{part_note}\n\nمتأكد إن ده صح؟",
         ):
             return
 
@@ -1952,6 +2735,12 @@ class StudyApp:
 
     # ---------------------------------------------------------- Process
     def _start_processing(self, explain: bool, mode: str = "lecture"):
+        # فحص model_config.json من بعيد قبل كل عملية فرّغ/لخّص - في
+        # ثريد منفصل (async) عشان الزرار يحس إنه بدأ فورًا، مش واقف
+        # مستني الشبكة. لو السلسلة اتغيّرت على GitHub، أول موديل يتجرب
+        # جوه process_lecture فعليًا بياخدها (بما إن القراءة بتحصل لحظة
+        # الاستخدام، مش محفوظة من الفحص ده).
+        self._refresh_remote_config_async()
         lecture = self.current_lecture
         if not lecture:
             show_warning("تنبيه", "اختار محاضرة/جلسة الأول.")
@@ -2097,6 +2886,7 @@ class StudyApp:
 
     # ---------------------------------------------------------- Notes-only (no re-transcribe)
     def _start_notes_only(self, mode: str = "lecture"):
+        self._refresh_remote_config_async()  # نفس فكرة _start_processing فوق
         lecture = self.current_lecture
         if not lecture:
             show_warning("تنبيه", "اختار محاضرة/جلسة الأول.")
@@ -2213,7 +3003,7 @@ class StudyApp:
         ).pack(side="left", padx=20, pady=14)
 
         ttk.Label(
-            win, text=f"اختار بالظبط أي ريكورد وأي تفريغ عايز تمسحه من «{lecture}»:",
+            win, text=f"اختار بالظبط أي ريكورد وأي تفريغ عايز تمسحه من «{_isolate_ltr_runs_label(lecture)}»:",
             background=PALETTE["bg"], foreground=PALETTE["text"],
             font=("Segoe UI", 10, "bold"), justify="right", wraplength=720,
         ).pack(anchor="e", padx=16, pady=(16, 4))
@@ -2357,10 +3147,21 @@ class StudyApp:
         sep = ttk.Separator(win, orient="horizontal")
         sep.pack(fill="x", padx=16, pady=(12, 8))
 
+        # لو مفيش ملف نوتس أصلاً للمحاضرة دي، الـ checkbox بيتعطّل (مش
+        # بس يتسيب قابل للتحديد) - قبل كده كان ممكن تحدده وتدوس "امسح
+        # المحدد"، فيظهر في رسالة التأكيد واللوج "هتمسح: كل النوتس" رغم
+        # إن مفيش ملف من الأساس يتمسح - انطباع غلط إن حاجة اتمسحت فعلاً.
+        notes_exist = (MARKDOWN_FOLDER / f"{lecture}.md").exists()
         var_notes = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            win, text="🧠 امسح كل الملخص/النوتس (Markdown) للمحاضرة دي", variable=var_notes,
-        ).pack(anchor="e", padx=16, pady=3)
+        notes_cb = ttk.Checkbutton(
+            win,
+            text=("🧠 امسح كل الملخص/النوتس (Markdown) للمحاضرة دي" if notes_exist
+                  else "🧠 مفيش ملف نوتس لهذه المحاضرة أصلاً"),
+            variable=var_notes,
+        )
+        if not notes_exist:
+            notes_cb.state(["disabled"])
+        notes_cb.pack(anchor="e", padx=16, pady=3)
 
         ttk.Label(
             win, text="⚠ المسح نهائي ومش هترجع فيه.",
@@ -2391,6 +3192,7 @@ class StudyApp:
             if not self._confirm_destructive_by_typing(
                 lecture,
                 f"هتمسح نهائياً: {'، '.join(parts_desc)}.\nالمسح نهائي ومفيش نسخة احتياطية.",
+                parent_win=win,
             ):
                 return
 
@@ -2412,19 +3214,97 @@ class StudyApp:
         )
         btn_cancel.pack(side="right", padx=(0, 8))
 
-    def _confirm_destructive_by_typing(self, lecture: str, message: str) -> bool:
+        # -----------------------------------------------------------
+        # منطقة خطر منفصلة بصريًا تمامًا عن باقي الشاشة (حدود + خلفية
+        # مميزة ولون زرار أغمق من "danger" العادي) - "امسح المحدد" فوق
+        # بيمسح بس اللي حددته ولسه المحاضرة نفسها موجودة في القايمة،
+        # أما الزرار ده فبيمسح المحاضرة بالكامل (صوت + تفريغ + نوتس +
+        # سجلها نفسه) ومش هتلاقيها في القايمة تاني خالص - ده أخطر إجراء
+        # في الشاشة فمينفعش يبان بنفس وزن باقي الأزرار.
+        danger_zone = tk.Frame(
+            win, bg="#fdeceb", highlightbackground=PALETTE["danger_critical"],
+            highlightthickness=2, bd=0,
+        )
+        danger_zone.pack(fill="x", padx=16, pady=(4, 16))
+
+        tk.Label(
+            danger_zone,
+            text="🔥 منطقة الخطر",
+            bg="#fdeceb", fg=PALETTE["danger_critical"],
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="e", padx=14, pady=(10, 2))
+
+        tk.Label(
+            danger_zone,
+            text=f"مسح «{_isolate_ltr_runs_label(lecture)}» بالكامل نهائيًا - كل ملفات الصوت والتفريغ والنوتس،\n"
+                 "وسجل المحاضرة نفسه (هتختفي تمامًا من قائمة المحاضرات، مش هتفضل فاضية).",
+            bg="#fdeceb", fg=PALETTE["text"], font=("Segoe UI", 9),
+            justify="right",
+        ).pack(anchor="e", padx=14, pady=(0, 10))
+
+        def _do_delete_entire_lecture():
+            if not self._confirm_destructive_by_typing(
+                lecture,
+                f"هتمسح «{lecture}» بالكامل نهائيًا: كل الصوت والتفريغ والنوتس وسجل "
+                "المحاضرة نفسه.\nمش هتلاقيها في القائمة تاني، والمسح نهائي ومفيش نسخة احتياطية.",
+                parent_win=win,
+            ):
+                return
+            win.destroy()
+            self._log(f"بدأ مسح المحاضرة بالكامل: {lecture}")
+            threading.Thread(
+                target=self._delete_lecture_completely_worker,
+                args=(lecture,), daemon=True,
+            ).start()
+
+        btn_delete_all = self._card_button(
+            danger_zone, "🔥 امسح المحاضرة بالكامل نهائيًا", _do_delete_entire_lecture,
+            PALETTE["danger_critical"], PALETTE["danger_critical_dark"],
+        )
+        btn_delete_all.pack(anchor="e", padx=14, pady=(0, 12))
+
+        # الطول الثابت "780x620" فوق كان كافي قبل إضافة "منطقة الخطر" -
+        # دلوقتي بعد ما المحتوى كله اتبنى، بنعيد حساب الطول الفعلي
+        # المطلوب (العرض فاضل ثابت 780) بدل ما نخمّن رقم ثابت جديد
+        # ممكن يتقطع على خط/دقة شاشة مختلفة (نفس باج تصغير الأزرار اللي
+        # اتصلح قبل كده في شاشة "محاضرة جديدة").
+        win.update_idletasks()
+        h = min(win.winfo_reqheight() + 4, win.winfo_screenheight() - 80)
+        x = self.root.winfo_x() + (self.root.winfo_width() - 780) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        screen_w, screen_h = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = max(0, min(x, screen_w - 780))
+        y = max(0, min(y, screen_h - h))
+        win.geometry(f"780x{h}+{x}+{y}")
+
+    def _confirm_destructive_by_typing(self, lecture: str, message: str, parent_win=None) -> bool:
         """تأكيد إضافي للعمليات اللي مالهاش رجعة: بدل Yes/No بس (سهل جداً
         تدوسه بسرعة من غير ما تخد بالك)، لازم تكتب اسم المحاضرة بالظبط
         عشان تأكد إنك واخد بالك فعلاً إيه اللي هيتمسح نهائي. زرار "نسخ
         الاسم" موجود عشان اليوزر يلصقه علطول (Ctrl+V) بدل ما يكتبه يدوي
-        ويغلط في حرف - المطابقة نص بنص فحرف زيادة/ناقص كفاية إنها ترفض."""
+        ويغلط في حرف - المطابقة نص بنص فحرف زيادة/ناقص كفاية إنها ترفض.
+
+        parent_win: النافذة اللي اتفتح منها التأكيد ده (مثلاً شاشة "مسح
+        بيانات المحاضرة") - بنتمركز فوقها هي بالذات، مش فوق النافذة
+        الرئيسية بس، وإلا لو parent_win مكانها مختلف عن self.root (أو
+        متحركة) كان التأكيد بيطلع في مكان عشوائي من غير أي ارتباط بصري
+        بالنافذة اللي فتحته."""
+        parent_win = parent_win or self.root
+
         win = tk.Toplevel(self.root)
         win.title("تأكيد نهائي")
         win.configure(bg=PALETTE["bg"])
         win.resizable(False, False)
         win.transient(self.root)
         win.grab_set()
-        win.geometry("440x300")
+
+        WIN_W, WIN_H = 440, 300
+        x = parent_win.winfo_x() + (parent_win.winfo_width() - WIN_W) // 2
+        y = parent_win.winfo_y() + (parent_win.winfo_height() - WIN_H) // 2
+        screen_w, screen_h = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = max(0, min(x, screen_w - WIN_W))
+        y = max(0, min(y, screen_h - WIN_H))
+        win.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
 
         header = tk.Frame(win, bg=PALETTE["danger"], width=440)
         header.pack(fill="x")
@@ -2436,7 +3316,7 @@ class StudyApp:
         ).pack(side="left", padx=20, pady=12)
 
         ttk.Label(
-            win, text=message, background=PALETTE["bg"], foreground=PALETTE["danger"],
+            win, text=_isolate_ltr_runs_label(message), background=PALETTE["bg"], foreground=PALETTE["danger"],
             font=("Segoe UI", 10, "bold"), justify="right", wraplength=400,
         ).pack(anchor="e", padx=16, pady=(16, 10))
 
@@ -2461,8 +3341,12 @@ class StudyApp:
         btn_copy_name.pack(side="left")
         _add_tooltip(btn_copy_name, "نسخ اسم المحاضرة بالظبط للـ clipboard عشان تلصقه (Ctrl+V) في الخانة تحت")
 
+        # النص المعروض بس (_isolate_ltr_runs) - متغيّر lecture الأصلي
+        # يفضل زي ما هو من غير لمس، لأنه مستخدم في المقارنة (_confirm)
+        # والنسخ للـ clipboard (_copy_lecture_name)، وعلامات العزل
+        # الخفية (LRI/PDI) هتبوّظ المطابقة لو اتحطت جوه القيمة الأصلية.
         name_label = ttk.Label(
-            row_name, text=f"«{lecture}»", background=PALETTE["bg"],
+            row_name, text=f"«{_isolate_ltr_runs_label(lecture)}»", background=PALETTE["bg"],
             foreground=PALETTE["accent_dark"], font=("Segoe UI", 9, "bold"),
             justify="right",
         )
@@ -2527,6 +3411,35 @@ class StudyApp:
         finally:
             self.root.after(0, self._refresh_chunks)
 
+    def _delete_lecture_completely_worker(self, lecture: str):
+        try:
+            report = delete_lecture_completely(lecture)
+            parts = []
+            if report["audio_files"]:
+                parts.append(f"{report['audio_files']} ملف صوت")
+            if report["transcript"]:
+                parts.append("التفريغ")
+            if report["notes"]:
+                parts.append("النوتس")
+            if report["state"]:
+                parts.append("سجل المحاضرة نفسه")
+            if parts:
+                self._log_threadsafe(f"✓ اتمسحت «{lecture}» بالكامل: {'، '.join(parts)}")
+            else:
+                self._log_threadsafe(f"مفيش ملفات كانت موجودة أصلاً لـ «{lecture}».")
+        except Exception as e:
+            self._log_threadsafe(f"⚠ حصل خطأ أثناء مسح المحاضرة بالكامل: {e}")
+        finally:
+            # المحاضرة المتمسوحة ممكن تكون لسه هي المحددة في القايمة -
+            # لازم نصفّر lecture_var الأول وإلا _refresh_lecture_list
+            # هيحافظ على اسمها القديم (اللي بقى مش موجود في القائمة)
+            # بدل ما يختار أول محاضرة متاحة بعدها.
+            def _after():
+                if self.lecture_var.get() == lecture:
+                    self.lecture_var.set("")
+                self._refresh_lecture_list()
+            self.root.after(0, _after)
+
     # ---------------------------------------------------------- Notes viewer
     def _open_markdown_file(self):
         lecture = self.current_lecture
@@ -2550,7 +3463,7 @@ class StudyApp:
             content = f.read()
 
         win = tk.Toplevel(self.root)
-        win.title(f"تفريغ: {lecture}")
+        win.title(f"تفريغ: {_isolate_ltr_runs_label(lecture)}")
         win.geometry("820x680")
         win.configure(bg=PALETTE["bg"])
 
@@ -2559,7 +3472,7 @@ class StudyApp:
         header.pack_propagate(False)
         header.configure(height=52)
         tk.Label(
-            header, text=f"📃  تفريغ: {lecture}", bg=PALETTE["accent"], fg="white",
+            header, text=f"📃  تفريغ: {_isolate_ltr_runs_label(lecture)}", bg=PALETTE["accent"], fg="white",
             font=("Segoe UI", 12, "bold"), anchor="w",
         ).pack(side="left", padx=20, pady=10)
 
@@ -2615,7 +3528,7 @@ class StudyApp:
             return
 
         win = tk.Toplevel(self.root)
-        win.title(f"نوتس: {lecture}")
+        win.title(f"نوتس: {_isolate_ltr_runs_label(lecture)}")
         win.geometry("820x680")
         win.configure(bg=PALETTE["bg"])
 
@@ -2624,7 +3537,7 @@ class StudyApp:
         header.pack_propagate(False)
         header.configure(height=52)
         tk.Label(
-            header, text=f"📄  نوتس: {lecture}", bg=PALETTE["accent"], fg="white",
+            header, text=f"📄  نوتس: {_isolate_ltr_runs_label(lecture)}", bg=PALETTE["accent"], fg="white",
             font=("Segoe UI", 12, "bold"), anchor="w",
         ).pack(side="left", padx=20, pady=10)
 
