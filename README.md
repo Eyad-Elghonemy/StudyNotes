@@ -57,6 +57,63 @@
 
 Newest first. Every version is available on the [Releases page](../../releases).
 
+### v1.8.0 — 2026-11-02:
+
+### New
+- Lecture notes are now tailored to the subject you pick, with 8 subject
+  profiles (Programming/CS, Engineering, Medicine, Law, Business,
+  Languages, Math/Science, Humanities & History) - each with its own
+  focus on terminology, precision, and formatting.
+- Each subject gets 2-3 optional toggles - e.g. exact code capture +
+  interview-question spotting for Programming, full derivation steps for
+  Engineering/Math, Red Flag warnings for Medicine, exceptions-to-the-rule
+  for Law, Case Study detail for Business.
+- A full lecture summary is now added automatically at the end once notes
+  are complete.
+- "Correction" (flagging factual errors the lecturer made) is now on by
+  default.
+- Added a settings panel to pick which AI model handles transcription and
+  summarization, with a visual breakdown of the fallback order.
+- Meeting notes' final merge step is now subject-aware too, matching
+  lecture notes.
+
+### Improved
+- The app now switches to the next available AI model faster when one is
+  temporarily down.
+- Updated the AI model list: moved off a retired Gemini model, added the
+  newer one, and replaced a retired Groq model.
+- Cancelling a transcription/summary job now works immediately at every
+  stage (not just between providers) - already-finished work is saved
+  instead of discarded.
+
+### Fixed
+- App crashing on "New session" with an invalid color error.
+- Several dialog layout issues: off-center meeting card, shrinking
+  buttons on "Other..." subject, floating scrollbar, cut-off Create
+  button with many attendees, missing back button on lecture dialog.
+- Emoji icons rendering as empty boxes on some Windows setups.
+- Mixed Arabic/English lecture names displaying in scrambled order in
+  dialog titles.
+- Deleting a lecture's files left an orphaned, unremovable entry in the
+  list.
+- "Delete everything" confirmation could appear in the top-left corner
+  instead of centered.
+- "Delete all notes" stayed clickable even with no notes file to delete.
+- Recording-start confirmation now shows which part number a resumed
+  recording continues from.
+- The selected AI model preference sometimes not saving between sessions.
+- A progress bar occasionally showing a confusing "0" after skipping
+  already-processed parts.
+- Update checks silently failing for some users on shared/mobile networks.
+- Long transcripts spoken fast with no pauses sometimes getting skipped
+  instead of summarized.
+- A slow memory/quota buildup on Gemini's side over long-term use that
+  could eventually block transcription.
+- The app being unable to reopen a lecture if it was closed at the exact
+  wrong moment after a sudden shutdown.
+- Re-recording a lecture after deleting its audio could silently skip the
+  new recording.
+
 ### v1.7.0 — 2026-10-08:
 
 - Fixed recordings sometimes coming out shorter after compression
@@ -220,7 +277,7 @@ NVIDIA_API_KEY="your-nvidia-api-key"
 
 # Optional: set this if you want data folders stored somewhere other than
 # next to the project itself
-STUDYNOTES_DIR="D:\Agoor"
+STUDYNOTES_DIR=
 ```
 
 > If `STUDYNOTES_DIR` isn't set, the folders are created automatically next to the scripts themselves.
