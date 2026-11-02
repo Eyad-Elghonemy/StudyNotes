@@ -211,8 +211,6 @@ Newest first. Every version is available on the [Releases page](../../releases).
 │   ├── feedback_setup.sql     # One-time SQL that creates the Supabase feedback table (insert-only)
 │   ├── state_manager.py       # Folder setup and shared state across scripts
 │   └── math_render.py         # Converts LaTeX to PNG images rendered in the GUI
-├── StudyNotes.spec            # PyInstaller build config (produces the raw .exe)
-├── StudyNotes.iss             # Inno Setup script that wraps the .exe into a distributable Setup.exe installer
 ├── requirements.txt           # All required packages
 ├── .env.example                # Environment variable template
 └── (created automatically at runtime)
