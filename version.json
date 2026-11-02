@@ -1,5 +1,5 @@
 {
   "version": "1.8.0",
-  "download_url": "https://github.com/Eyad-Elghonemy/StudyNotes/releases/download/v1.7.0/StudyNotes_Setup.exe",
-  "notes": ""
+  "download_url": "https://github.com/Eyad-Elghonemy/StudyNotes/releases/download/v1.8.0/StudyNotes_Setup.exe",
+  "notes": "Notes now tailored to your subject (8 profiles, optional toggles per subject). \nPick which AI model handles transcription/summarization. \nFaster model fallback. \nSeveral bug fixes including a crash on New session, lost recordings after deleting audio, and silently-skipped notes on fast speech."
 }
