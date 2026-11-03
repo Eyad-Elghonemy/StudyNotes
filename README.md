@@ -56,13 +56,13 @@
 
 ### End-to-End Processing Pipeline
 
-![StudyNotes Processing Pipeline](docs/assets/logos/pipeline.svg)
+![StudyNotes Processing Pipeline](assets/logos/pipeline.svg)
 
 <br/>
 
 ### High-Level Component Architecture
 
-![StudyNotes System Architecture](docs/assets/logos/architecture.svg)
+![StudyNotes System Architecture](assets/logos/architecture.svg)
 
 </div>
 
