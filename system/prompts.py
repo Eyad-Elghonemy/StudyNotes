@@ -320,6 +320,7 @@ def _other_subject_profile(subject_name: str) -> dict[str, str]:
 def build_explain_prompt(
     subject: str, enable_corrections: bool = False, enable_additions: bool = False,
     context_carry: str = "",
+    extra1: bool = False, extra2: bool = False, extra3: bool = False,
 ) -> str:
     """
     بيبني برومبت "لخص المحاضرة" حسب مجال المحاضرة. لو subject فاضي أو
@@ -335,6 +336,10 @@ def build_explain_prompt(
     المقطع اللي قبل ده - بيساعد الموديل يكمّل بسلاسة من غير ما يكرر
     تعريف نفس المصطلح أو نفس الخلاصة لو ظهرت قبل كده. فاضي للمقطع الأول
     (مفيش حاجة قبله أصلاً).
+
+    extra1/extra2/extra3: خيارات "التخصص" الخاصة بكل مجال محاضرة (نفس
+    فكرة enable_extra1/2 بتاعة build_meeting_prompt بالظبط) - متخزّنة في
+    state.json كـ lecture_extra1/2/3، افتراضيًا الثلاثة False.
     """
     subject = (subject or "").strip()
     if not subject or subject == DEFAULT_SUBJECT_LABEL:
@@ -365,7 +370,86 @@ def build_explain_prompt(
         )
 
     addendum = _optional_addendum(enable_corrections, enable_additions)
+    subject_key = subject or DEFAULT_SUBJECT_LABEL
+    addendum += _lecture_extra_addendum(subject_key, extra1, extra2, extra3)
     return base + addendum if addendum else base
+
+
+# خيارات "التخصص" الاختيارية لكل مجال محاضرة - نفس فكرة
+# _MEETING_EXTRA_OPTIONS بتاعة الاجتماعات بالظبط، بس لكل مجال العدد اللي
+# فعليًا يفيده (2 لمعظم المجالات، 3 للهندسة). النصوص هنا تعليمة فعلية
+# للموديل (أدق وأطول من الـ label القصير اللي بيتعرض كـ Checkbox في
+# gui_app.py._LECTURE_EXTRA_LABELS) - الترتيب لازم يفضل مطابق للترتيب في
+# _LECTURE_EXTRA_LABELS عشان extra1/2/3 يطابقوا نفس الـ checkbox.
+_LECTURE_EXTRA_OPTIONS = {
+    "برمجة/علوم حاسب": (
+        "انسخ أي كود، أمر Terminal، أو مثال برمجي ذكره المحاضر حرفيًا "
+        "داخل code block (```)، بدون إعادة صياغة أو اختصار، حتى لو جزء "
+        "بسيط.",
+        "ركّز بشكل خاص على رصد أي نقطة تُسأل عادة في مقابلات العمل "
+        "التقنية (Technical Interview) مرتبطة بالموضوع، واستخدم صندوق "
+        "🎯 لرصدها بحساسية أعلى من المعتاد.",
+    ),
+    "هندسة": (
+        "اكتب خطوات الحل أو الاشتقاق الرياضي كاملة، خطوة بخطوة، من غير "
+        "ما تقفز لنتيجة نهائية بدون المراحل اللي أدت ليها.",
+        "لو المحاضر ذكر تطبيق عملي أو واقعي للمفهوم، وضّحه في سطر "
+        "منفصل.",
+        "ركّز بشكل خاص على رصد أي نقطة تُسأل عادة في مقابلات العمل "
+        "التقنية (Technical Interview) مرتبطة بالموضوع، واستخدم صندوق "
+        "🎯 لرصدها بحساسية أعلى من المعتاد.",
+    ),
+    "طب": (
+        "لو المحاضر قارن بين تشخيصين أو حالتين متشابهتين، وضّح الفرق "
+        "بينهم بشكل صريح (Differential Diagnosis).",
+        "لو المحاضر أشار لمصدر مراجعة عام (كتاب مرجعي، دليل إكلينيكي "
+        "معروف)، اذكره في صندوق 📚 منفصل.",
+    ),
+    "قانون": (
+        "لو المحاضر ذكر استثناء عن قاعدة قانونية عامة، وضّحه بشكل "
+        "منفصل وصريح، ومتدمجوش مع شرح القاعدة الأساسية.",
+        "لو المحاضر ذكر مجال تطبيق عملي أو واقعي للمبدأ القانوني، "
+        "وضّحه في سطر منفصل.",
+    ),
+    "إدارة أعمال": (
+        "لو فيه Case Study اتشرحت، اكتبها بكل تفاصيلها (الموقف، "
+        "التحليل، النتيجة) من غير اختصار مخل.",
+        "لو المحاضر ربط الكلام بإطار عمل (Framework) معروف، اذكر اسمه "
+        "صراحة حتى لو عناصره الكاملة مش مذكورة في القاعدة 5.",
+    ),
+    "لغات": (
+        "لو فيه مثال كتبه المحاضر وفيه خطأ إملائي/نحوي واضح، صحّحه في "
+        "سطر منفصل من غير انتقاد.",
+        "لو المحاضر اقترح طريقة تدريب أو ممارسة، اذكرها في صندوق "
+        "منفصل.",
+    ),
+    "رياضيات وعلوم": (
+        "اكتب خطوات الحل أو الإثبات كاملة، خطوة بخطوة، من غير قفز "
+        "لنتيجة نهائية.",
+        "لو المفهوم ليه تطبيق في مجال تاني غير المجال المباشر "
+        "للمحاضرة، اذكره في سطر منفصل.",
+    ),
+    "علوم إنسانية وتاريخ": (
+        "وضّح علاقات السبب والنتيجة بين الأحداث بشكل صريح ومباشر، مش "
+        "بس سرد تسلسلي.",
+        "لو المحاضر أشار لمصدر أو قراءة إضافية، اذكرها في صندوق 📚 "
+        "منفصل.",
+    ),
+}
+
+
+def _lecture_extra_addendum(subject_key: str, extra1: bool, extra2: bool, extra3: bool) -> str:
+    options = _LECTURE_EXTRA_OPTIONS.get(subject_key)
+    if not options:
+        return ""
+    flags = (extra1, extra2, extra3)
+    parts = [f"- {text}" for text, enabled in zip(options, flags) if enabled]
+    if not parts:
+        return ""
+    return (
+        "\n\n--- إضافي (مفعّل بمعرفة المستخدم لتخصص المحاضرة ده) ---\n\n"
+        + "\n".join(parts)
+    )
 
 
 def _optional_addendum(enable_corrections: bool, enable_additions: bool) -> str:

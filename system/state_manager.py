@@ -149,8 +149,12 @@ def load_state(lecture: str) -> dict:
     # أي تغيير) - عشان المحاضرات القديمة تفضل شغالة بالظبط زي ما هي.
     data.setdefault("subject", "")
     # صناديق 🔧 تصحيح و💬 إضافة الاختياريين - إعداد خاص بكل محاضرة لوحدها
-    # (مش عام لكل المحاضرات)، بيتحدد وقت إنشاء المحاضرة. افتراضيًا معطّلين.
-    data.setdefault("enable_corrections", False)
+    # (مش عام لكل المحاضرات)، بيتحدد وقت إنشاء المحاضرة. enable_corrections
+    # افتراضيًا True (Bug #02 في تقرير المراجعة: اتوعدنا في الـ changelog
+    # إنها بقت افتراضية، بس الـ checkbox القديم اتشال من الواجهة من غير ما
+    # حد يغيّر القيمة الافتراضية هنا - فضلت الميزة معطّلة بالكامل رغم
+    # الوعد). enable_additions لسه افتراضيًا False (مفيش وعد مشابه بيها).
+    data.setdefault("enable_corrections", True)
     data.setdefault("enable_additions", False)
     return data
 

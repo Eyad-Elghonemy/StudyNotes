@@ -78,7 +78,7 @@ import evaluation
 import updater
 import pdf_export
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30

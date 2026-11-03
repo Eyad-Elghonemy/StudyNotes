@@ -1362,6 +1362,9 @@ def summarize_new_part(
             state.get("enable_corrections", False),
             state.get("enable_additions", False),
             context_carry=context_carry,
+            extra1=state.get("lecture_extra1", False),
+            extra2=state.get("lecture_extra2", False),
+            extra3=state.get("lecture_extra3", False),
         )
 
     base_summarized_chars = state["summarized_chars"]
