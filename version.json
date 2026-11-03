@@ -1,5 +1,5 @@
 {
-  "version": "1.8.0",
-  "download_url": "https://github.com/Eyad-Elghonemy/StudyNotes/releases/download/v1.8.0/StudyNotes_Setup.exe",
-  "notes": "Notes now tailored to your subject (8 profiles, optional toggles per subject). \nPick which AI model handles transcription/summarization. \nFaster model fallback. \nSeveral bug fixes including a crash on New session, lost recordings after deleting audio, and silently-skipped notes on fast speech."
+  "version": "1.8.1",
+  "download_url": "https://github.com/Eyad-Elghonemy/StudyNotes/releases/download/v1.8.1/StudyNotes_Setup.exe",
+  "notes": "• Subject extra toggles (code extraction, interview questions, derivations) are now active.\n• Factual error correction mode is now enabled by default.\n• Protected session state files from corruption on sudden shutdowns.\n• Fixed Gemini cloud storage leak & fast speech chunking."
 }
