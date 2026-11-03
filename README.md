@@ -295,18 +295,10 @@ Newest first. Releases with pre-built binaries are available on the [Releases](.
 │   ├── record_session.py      # Standalone CLI WASAPI loopback audio recorder
 │   ├── first_run_setup.py     # Onboarding setup wizard & API key validation dialogs
 │   ├── updater.py             # Auto-update checker & installer launcher
-│   ├── evaluation.py          # In-app user feedback dialog & Supabase offline queue
-│   ├── manage_config.py       # Developer CLI tool for updating model_config.json
-│   ├── manage_config_gui.py   # Developer GUI tool for managing model configs & Git push
-│   └── feedback_setup.sql     # Supabase Row-Level Security setup script
-├── tests/
-│   ├── test_remote_config.py  # Unit tests for remote config fetch, caching & validation
-│   ├── test_explain_flow.py   # End-to-end integration tests for model failover & circuit breaker
-│   └── test_gui_catalog.py    # Unit tests for dynamic GUI dropdowns & legacy key resolution
+│   └── evaluation.py          # In-app user feedback dialog & Supabase offline queue  
+│  
 ├── model_config.json          # Master remote model priority & tuning configuration
 ├── requirements.txt           # Python dependency specifications
-├── studynotes.spec            # PyInstaller onedir build configuration
-├── studynotes.iss             # Inno Setup Windows installer compiler script
 └── .env.example               # Template for API keys and directory configuration
 ```
 
@@ -394,14 +386,6 @@ python system/record_session.py
 
 ```bash
 python system/process_lecture.py "Lecture_Name"
-```
-
-### Running the Test Suite
-
-```bash
-python system/test_remote_config.py
-python system/test_explain_flow.py
-python system/test_gui_catalog.py
 ```
 
 ---
