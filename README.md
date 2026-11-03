@@ -298,6 +298,7 @@ Newest first. Releases with pre-built binaries are available on the [Releases](.
 │   └── evaluation.py          # In-app user feedback dialog & Supabase offline queue  
 │  
 ├── model_config.json          # Master remote model priority & tuning configuration
+├── version.json
 ├── requirements.txt           # Python dependency specifications
 └── .env.example               # Template for API keys and directory configuration
 ```
