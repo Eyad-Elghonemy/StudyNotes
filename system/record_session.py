@@ -43,10 +43,21 @@ def _next_part_number(lecture: str) -> int:
     01" تاني - ولو الجزء الجديد اتضغط لـ Opus قبل ما تدوس "فرّغ" (بيبقى
     اسمه مطابق حرفيًا لاسم الجزء القديم اللي اتمسح)، البرنامج كان بيفتكر
     إنه "اتفرّغ قبل كده" (بنفس الاسم) ويتجاهله بصمت - فقدان بيانات من
-    غير أي تحذير (Bug #01 في تقرير المراجعة)."""
+    غير أي تحذير (Bug #01 في تقرير المراجعة).
+
+    مش بنستخدم RECORD_FOLDER.glob() هنا عمدًا: اسم المحاضرة ممكن يحتوي
+    على [ أو ] (مسموحين في safe_name()، مش رموز ممنوعة في أسماء ملفات
+    ويندوز)، وpathlib.Path.glob() بتفسّر [...] كـ character-class
+    matching مش كنص حرفي - فملفات محاضرة زي "AI [Transformers]" كانت
+    "تختفي" من الفحص خالص (BUG-04 في التقرير الجنائي)."""
     highest = 0
-    for ext in ("opus", "flac", "wav"):
-        for p in RECORD_FOLDER.glob(f"{lecture}__Part *.{ext}"):
+    prefix = f"{lecture}__Part "
+    if RECORD_FOLDER.exists():
+        for p in RECORD_FOLDER.iterdir():
+            if not (p.is_file() and p.name.startswith(prefix)):
+                continue
+            if p.suffix.lower() not in (".opus", ".flac", ".wav"):
+                continue
             m = _PART_NUM_RE.search(p.name)
             if m:
                 highest = max(highest, int(m.group(1)))
