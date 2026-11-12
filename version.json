@@ -1,5 +1,5 @@
 {
-  "version": "1.8.1",
-  "download_url": "https://github.com/Eyad-Elghonemy/StudyNotes/releases/download/v1.8.1/StudyNotes_Setup.exe",
-  "notes": "• Subject extra toggles (code extraction, interview questions, derivations) are now active.\n• Factual error correction mode is now enabled by default.\n• Protected session state files from corruption on sudden shutdowns.\n• Fixed Gemini cloud storage leak & fast speech chunking."
+  "version": "1.8.2",
+  "download_url": "https://github.com/Eyad-Elghonemy/StudyNotes/releases/download/v1.8.2/StudyNotes_Setup.exe",
+  "notes": "• Fixed crashes and data loss when opening or re-recording certain lectures.\n• Fixed lecture names with brackets (e.g. \"[Topic]\") showing up empty.\n• Fixed lectures being wrongly marked \"corrupted\" while still compressing.\n• Fixed summarization/transcription occasionally getting stuck on unstable networks.\n• Factual correction mode now reliably defaults to on.\n• Feedback logs no longer include your Windows username.\n• Hardened update downloads and audio compression against interrupted connections.\n• Faster NVIDIA key check on first-time setup."
 }
