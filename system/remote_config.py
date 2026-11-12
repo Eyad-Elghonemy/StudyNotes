@@ -19,13 +19,21 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from state_manager import BASE_DIR
+from state_manager import STATE_FOLDER
 
 CONFIG_URL = (
     "https://raw.githubusercontent.com/Eyad-Elghonemy/StudyNotes/main/model_config.json"
 )
 _HEADERS = {"User-Agent": "StudyNotes-remote-config"}
-_CACHE_PATH = BASE_DIR / ".state" / "remote_config_cache.json"
+# BASE_DIR (مجلد الكود/التثبيت) مختلف عن STATE_FOLDER (مجلد بيانات اليوزر
+# الفعلي، عن طريق DATA_DIR) في أكتر من حالة - مثلاً لو فيه .env بمسار
+# مخصص (STUDYNOTES_DIR)، أو لو البرنامج متثبت في Program Files (مجلد
+# محمي عادة). استيراد BASE_DIR هنا كان بيخلي الكاش يتكتب في المسار
+# الغلط، وممكن يفشل بـ PermissionError في مجلدات محمية (BUG-03 في
+# التقرير الجنائي). STATE_FOLDER هي نفسها بالفعل DATA_DIR/".state"
+# (بتتعمل أوتوماتيك وقت استيراد state_manager)، فمحتاجينش أي ".state"
+# زيادة هنا.
+_CACHE_PATH = STATE_FOLDER / "remote_config_cache.json"
 
 _VALID_PROVIDERS = {"gemini", "groq", "nvidia"}
 _MAX_CHAIN_LEN = 20
