@@ -101,12 +101,40 @@ def safe_name(name: str) -> str:
     return cleaned or "untitled_lecture"
 
 
+def _glob_lecture_audio(lecture: str, ext: str) -> list[Path]:
+    """بديل آمن لـ RECORD_FOLDER.glob(f"{lecture}__*.{ext}") - بيقارن اسم
+    الملف حرفيًا (startswith + endswith) بدل ما يمرّر اسم المحاضرة كـ
+    glob pattern. safe_name() بتسمح بالقوسين [ ] في اسم المحاضرة (مش
+    رموز ممنوعة في أسماء ملفات ويندوز)، لكن pathlib.Path.glob() بتفسّر
+    [...] كـ character-class matching (زي RegEx) مش كنص حرفي - فمحاضرة
+    اسمها فيه قوس كانت ملفاتها "تختفي" من كل القوايم (مدة 0، مفيش أجزاء
+    ظاهرة) رغم إنها موجودة فعليًا على القرص (BUG-04 في التقرير الجنائي).
+    """
+    prefix = f"{lecture}__"
+    suffix = f".{ext}"
+    if not RECORD_FOLDER.exists():
+        return []
+    return [
+        p for p in RECORD_FOLDER.iterdir()
+        if p.is_file() and p.name.startswith(prefix) and p.name.endswith(suffix)
+    ]
+
+
+# أسماء ملفات .json موجودة جوه STATE_FOLDER لكنها مش محاضرات - بتخص
+# وحدات تانية (evaluation.py, remote_config.py) بتشارك نفس الفولدر لغرض
+# تاني خالص. من غير الاستبعاد ده، list_existing_lectures() كانت بتعامل
+# "pending_feedback" كأنه اسم محاضرة، و load_state("pending_feedback")
+# كانت بتفشل أو بترجع بيانات مالهاش معنى (محتواها list أصلًا بالتصميم -
+# طابور تقييمات لسه ما اتبعتتش - مش حالة محاضرة خالص).
+_RESERVED_STATE_FILENAMES = {"pending_feedback", "remote_config_cache"}
+
+
 def list_existing_lectures() -> list[str]:
     """
     يرجع أسماء كل المحاضرات المعروفة، سواء كان ليها ملف حالة (بعد أول
     تفريغ ناجح) أو لسه بس ملفات صوت مسجلة.
     """
-    from_state = {p.stem for p in STATE_FOLDER.glob("*.json")}
+    from_state = {p.stem for p in STATE_FOLDER.glob("*.json")} - _RESERVED_STATE_FILENAMES
     from_audio = set()
     for ext in ("opus", "flac", "wav"):
         for p in RECORD_FOLDER.glob(f"*__*.{ext}"):
@@ -122,7 +150,16 @@ def load_state(lecture: str) -> dict:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+            if not isinstance(data, dict):
+                # الملف اتقرا كـ JSON صحيح من غير أي استثناء، لكن القيمة
+                # اللي جواه مش dict (مثلاً list) - شكل غلط تمامًا عن
+                # المتوقع، مش "ملف تالف" بالمعنى اللي except تحت بتمسكه.
+                # من غير الفحص ده، data.setdefault() تحت كانت بترمي
+                # AttributeError وتطيّح البرنامج (كراش حقيقي حصل في
+                # البروداكشن) كل مرة اليوزر يفتح المحاضرة دي. بنعاملها
+                # زي ملف تالف بالظبط: تحذير في اللوج ورجوع لقيم افتراضية.
+                raise ValueError(f"القيمة الجذرية {type(data).__name__} مش dict")
+        except (json.JSONDecodeError, OSError, ValueError) as e:
             # ملف الـ state اتلف (مثلاً الجهاز اتقفل فجأة وسط الكتابة
             # القديمة قبل إصلاح save_state تحت) - من غير الحماية دي، أي
             # محاولة فتح للمحاضرة دي كانت بتطيّح البرنامج بالكامل (crash)
@@ -271,6 +308,15 @@ def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
         return src_path
 
     out_path = src_path.with_suffix(".opus")
+    # ffmpeg بيكتب على اسم مؤقت (.opus.tmp) مش على الاسم النهائي مباشرة؛
+    # الاسم النهائي (out_path) مابيظهرش على القرص إلا بعد ما ننجح نتأكد
+    # من اكتمال وصحة الناتج بالكامل (os.replace لحظي واحد تحت). من غير
+    # كده كانت فيه نافذة زمنية حقيقية (كذا ثانية، طول مدة التحويل) فيها
+    # ملف .opus ناقص موجود على الاسم النهائي نفسه اللي أي كود تاني ممكن
+    # يحاول يقراه وقتها (BUG-05 في التقرير الجنائي - ده السبب الجذري
+    # اللي Bug #02 عالج عرضه بس، مش جذره، بإضافة fallback للـ FLAC
+    # الأصلي وقت القراءة).
+    tmp_out_path = out_path.with_suffix(out_path.suffix + ".tmp")
     try:
         # creationflags=CREATE_NO_WINDOW: من غير ده، كل استدعاء لـ ffmpeg
         # وقت ما البرنامج شغال كـ exe (windowed, من غير console) كان بيفتح
@@ -292,14 +338,22 @@ def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
                 "-y", "-i", str(src_path),
                 "-ar", "16000", "-ac", "1",
                 "-c:a", "libopus", "-b:a", bitrate,
-                str(out_path),
+                # -f opus لازمة هنا بالتحديد: ffmpeg بيحدد نوع الـ
+                # container افتراضيًا من امتداد الملف، والاسم المؤقت
+                # بينتهي بـ ".tmp" (مش ".opus")، فمن غير فرض النوع صراحة
+                # ffmpeg بيرفض يشتغل أصلًا ("Unable to choose an output
+                # format"). من غير التعديل ده، إصلاح BUG-05 نفسه كان
+                # هيبوّظ الضغط بالكامل.
+                "-f", "opus",
+                str(tmp_out_path),
             ],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **kwargs,
         )
-        if not out_path.exists() or out_path.stat().st_size == 0:
+        if not tmp_out_path.exists() or tmp_out_path.stat().st_size == 0:
+            tmp_out_path.unlink(missing_ok=True)
             return src_path  # الضغط فشل فعلياً رغم مفيش exception
 
         # تحقّق إضافي مهم: الملف "موجود ومش فاضي" مش كفاية لوحدها - ffmpeg
@@ -309,16 +363,22 @@ def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
         # المدتين الأول، ومش بنمسح الأصل غير لو فعلاً متطابقين (بهامش
         # بسيط للفروق الطبيعية جدًا في الترميز).
         src_duration = _audio_duration_seconds(src_path)
-        out_duration = _audio_duration_seconds(out_path)
+        out_duration = _audio_duration_seconds(tmp_out_path)
         if (
             src_duration is not None and out_duration is not None
             and out_duration < src_duration - 2  # هامش ثانيتين لفروق الترميز الطبيعية
         ):
-            # الضغط "نجح" تقنيًا بس الناتج ناقص عن الأصل - نسيب الاتنين
-            # (الـ Opus الناقص + الـ FLAC الأصلي) ونرجّع الأصلي عشان
-            # الاستخدام الفعلي (تفريغ/تلخيص) يكمل بالملف الكامل، ومفيش
-            # بيانات بتتفقد بصمت.
+            # الضغط "نجح" تقنيًا بس الناتج ناقص عن الأصل - نمسح المؤقت
+            # ونسيب الـ FLAC الأصلي زي ما هو، ونرجّعه عشان الاستخدام
+            # الفعلي (تفريغ/تلخيص) يكمل بالملف الكامل، ومفيش بيانات
+            # بتتفقد بصمت.
+            tmp_out_path.unlink(missing_ok=True)
             return src_path
+
+        # التبديل اللحظي (atomic): من هنا بس الاسم النهائي (out_path)
+        # بيظهر على القرص، وبمحتوى كامل ومتحقق منه بالفعل - مفيش أي
+        # لحظة وسطى فيها ملف ناقص على out_path.
+        os.replace(tmp_out_path, out_path)
 
         # نحاول نمسح الأصلي كذا مرة لو كان لسه مقفول من ثريد تاني
         for attempt in range(5):
@@ -329,6 +389,7 @@ def compress_to_opus(src_path: Path, bitrate: str = "24k") -> Path:
                 time.sleep(0.5)
         return out_path
     except Exception:
+        tmp_out_path.unlink(missing_ok=True)
         return src_path
 
 
@@ -384,7 +445,7 @@ def list_lecture_chunks(lecture: str, state: dict) -> list[dict]:
     """
     by_stem_prefix = {}  # timestamp -> path (بالأولوية لـ opus)
     for ext, priority in (("opus", 0), ("flac", 1), ("wav", 2)):
-        for p in RECORD_FOLDER.glob(f"{lecture}__*.{ext}"):
+        for p in _glob_lecture_audio(lecture, ext):
             ts = p.stem.rsplit("__", 1)[-1]
             if ts not in by_stem_prefix or priority < by_stem_prefix[ts][1]:
                 by_stem_prefix[ts] = (p, priority)
@@ -399,6 +460,22 @@ def list_lecture_chunks(lecture: str, state: dict) -> list[dict]:
             status = "recorded"
 
         duration = _audio_duration_seconds(path)
+        if duration is None and path.suffix == ".opus":
+            # الملف .opus ده ممكن يكون لسه بيتضغط فعليًا (ffmpeg بيكتبه
+            # تدريجيًا) - مش تالف (Bug #02 في تقرير المراجعة). الدليل
+            # الأضمن مش توقيت (مفيش رقم ثواني تخميني ممكن يغلط)، لكن
+            # حقيقة إن compress_to_opus() بيسيب الـ FLAC الأصلي موجود
+            # جنب الـ Opus طول ما الضغط شغال، ومابيمسحوش غير بعد ما
+            # يتأكد إن الناتج كامل وسليم. لو الـ FLAC ده لسه موجود وقابل
+            # للقراءة، نستخدم مدته (الملف المضمون الكامل) بدل ما نعتبر
+            # الجزء كله تالف. لو مفيش FLAC أصلًا (الحالة العادية بعد ما
+            # الضغط يخلص بنجاح)، فعلاً نعتبره تالف زي ما كان قبل كده.
+            sibling_flac = path.with_suffix(".flac")
+            if sibling_flac.exists():
+                flac_duration = _audio_duration_seconds(sibling_flac)
+                if flac_duration is not None:
+                    duration = flac_duration
+
         chunks.append({
             "filename": path.name,
             "path": path,
@@ -464,7 +541,7 @@ def delete_lecture_data(
 
     if delete_audio:
         for ext in ("opus", "flac", "wav"):
-            for p in RECORD_FOLDER.glob(f"{lecture}__*.{ext}"):
+            for p in _glob_lecture_audio(lecture, ext):
                 try:
                     p.unlink(missing_ok=True)
                     report["audio_files"] += 1
@@ -610,8 +687,17 @@ def delete_lecture_completely(lecture: str) -> dict:
     بيرجع تقرير بعدد/نوع الملفات اللي اتمسحت فعليًا."""
     report = {"audio_files": 0, "transcript": False, "notes": False, "state": False}
 
+    if lecture in _RESERVED_STATE_FILENAMES:
+        # list_existing_lectures() بتستبعد الأسماء دي من قايمة المحاضرات
+        # أصلًا، لكن الدالة دي ممكن تتنادى مباشرة (برمجيًا) باسم محاضرة
+        # من غير ما يمر على list_existing_lectures() الأول - فلازم فحص
+        # مستقل هنا كمان. من غيره، نداء بـ "pending_feedback" كان ممكن
+        # يمسح طابور التقييمات اللي لسه ما اتبعتتش نهائيًا (BUG-07 في
+        # التقرير الجنائي)، رغم إنه مش محاضرة خالص.
+        return report
+
     for ext in ("opus", "flac", "wav"):
-        for p in RECORD_FOLDER.glob(f"{lecture}__*.{ext}"):
+        for p in _glob_lecture_audio(lecture, ext):
             try:
                 p.unlink(missing_ok=True)
                 report["audio_files"] += 1
