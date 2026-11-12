@@ -593,6 +593,17 @@ from prompts import (
 # طبقة الاتصال بالنماذج
 # =========================================================================
 
+# حد زمني على مستوى عميل الـ API نفسه (مش على مستوى _run_with_timeout) -
+# شبكة أمان بس، مش بديل عن timeout_sec الديناميكي في transcribe_audio_file/
+# explain_text. الهدف: لو الاتصال "عالق" فعليًا (مش رفض سريع، لا استجابة
+# خالص)، العميل نفسه يفشل من غير ما يستنى بلا حدود - وده بيخلّي الثريد
+# الـ daemon اللي _run_with_timeout بتسيبه شغال في الخلفية بعد التايم-آوت
+# (Bug #08 في تقرير المراجعة) يموت خلال دقايق بدل ما يفضل عالق للأبد.
+# القيمة سخية عمدًا (أكبر بكتير من أي timeout_sec فعلي بيتحسب ديناميكيًا)
+# عشان متقطعش طلب حقيقي شغال عادي - هي آخر خط دفاع مش أول واحد.
+_HTTP_CLIENT_TIMEOUT_SEC = 120.0
+
+
 def _gemini_client() -> "genai.Client":
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY مش موجود")
@@ -603,13 +614,41 @@ def _gemini_client() -> "genai.Client":
     # بسرعة (ثواني) بدل ما نستنى المكتبة تستسلم من جوّاها.
     # ⚠️ لسه محتاج تأكيد عملي إن اسم الإعداد ده صح 100% مع نسخة المكتبة
     # عندك - جرّبه بـ test_summary_models.py وشوف لو الوقت قل فعلاً.
+    # timeout هنا بالمللي ثانية (مش ثواني زي Groq/OpenAI تحت) - تأكدنا من
+    # ده في توثيق مكتبة google-genai قبل ما نحطه.
     try:
-        http_options = genai.types.HttpOptions(retry_options={"attempts": 1})
+        http_options = genai.types.HttpOptions(
+            retry_options={"attempts": 1},
+            timeout=int(_HTTP_CLIENT_TIMEOUT_SEC * 1000),
+        )
         return genai.Client(api_key=GEMINI_API_KEY, http_options=http_options)
     except Exception:
-        # لو الإعداد ده مش مدعوم في نسخة المكتبة الحالية، نكمل عادي من
-        # غيره بدل ما نوقف البرنامج كله بسبب تحسين سرعة مش أساسي.
+        # لو أي من الإعدادين مش مدعوم في نسخة المكتبة الحالية، نكمل عادي
+        # من غيرهم بدل ما نوقف البرنامج كله بسبب تحسين سرعة مش أساسي.
         return genai.Client(api_key=GEMINI_API_KEY)
+
+
+def _groq_client() -> "Groq":
+    """مصدر واحد لإنشاء عميل Groq - بيتستخدم من التفريغ والتلخيص مع بعض،
+    بدل ما كل دالة تبنيه بنفسها. timeout هنا (Bug #08، تحسين جزئي) بيمنع
+    نفس مشكلة الـ _gemini_client فوق: اتصال عالق من غير استجابة خالص."""
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY مش موجود")
+    from groq import Groq
+    return Groq(api_key=GROQ_API_KEY, timeout=_HTTP_CLIENT_TIMEOUT_SEC)
+
+
+def _nvidia_client() -> "OpenAI":
+    """نفس فكرة _groq_client بالظبط، لـ NVIDIA (بتستخدم مكتبة openai نفسها
+    بـ base_url مختلف بس - NVIDIA NIM متوافقة مع واجهة OpenAI بالكامل)."""
+    if not NVIDIA_API_KEY:
+        raise RuntimeError("NVIDIA_API_KEY مش موجود")
+    from openai import OpenAI
+    return OpenAI(
+        api_key=NVIDIA_API_KEY,
+        base_url="https://integrate.api.nvidia.com/v1",
+        timeout=_HTTP_CLIENT_TIMEOUT_SEC,
+    )
 
 
 def _transcribe_with_gemini(audio_path, model: str = None) -> str:
@@ -649,11 +688,7 @@ def _transcribe_with_gemini(audio_path, model: str = None) -> str:
 
 
 def _transcribe_with_groq(audio_path, model: str = None) -> str:
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY مش موجود")
-    from groq import Groq
-
-    client = Groq(api_key=GROQ_API_KEY)
+    client = _groq_client()
     with open(audio_path, "rb") as f:
         result = client.audio.transcriptions.create(
             file=(str(audio_path), f.read()),
@@ -801,11 +836,7 @@ _GROQ_MODEL_MAX_OUTPUT_TOKENS = {
 
 def _explain_with_groq_once(text: str, prompt: str = EXPLAIN_PROMPT, model: str = None) -> str:
     """الاستدعاء الخام لـ Groq - مقطع واحد زي ما هو، من غير أي تقسيم."""
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY مش موجود")
-    from groq import Groq
-
-    client = Groq(api_key=GROQ_API_KEY)
+    client = _groq_client()
     model_id = model or GROQ_TEXT_MODEL
     kwargs = {}
     max_tokens = _GROQ_MODEL_MAX_OUTPUT_TOKENS.get(model_id)
@@ -867,13 +898,7 @@ def _explain_with_groq(text: str, prompt: str = EXPLAIN_PROMPT, model: str = Non
 
 
 def _explain_with_nvidia(text: str, prompt: str = EXPLAIN_PROMPT, model: str = None) -> str:
-    if not NVIDIA_API_KEY:
-        raise RuntimeError("NVIDIA_API_KEY مش موجود")
-    from openai import OpenAI
-
-    # NVIDIA NIM بيستخدم واجهة متوافقة مع OpenAI بالكامل - نفس مكتبة
-    # openai القياسية، بس بـ base_url مختلف.
-    client = OpenAI(api_key=NVIDIA_API_KEY, base_url="https://integrate.api.nvidia.com/v1")
+    client = _nvidia_client()
     completion = client.chat.completions.create(
         model=model or NVIDIA_TEXT_MODEL,
         messages=[
@@ -1359,7 +1384,7 @@ def summarize_new_part(
             )
         return build_explain_prompt(
             state.get("subject", ""),
-            state.get("enable_corrections", False),
+            state.get("enable_corrections", True),
             state.get("enable_additions", False),
             context_carry=context_carry,
             extra1=state.get("lecture_extra1", False),
