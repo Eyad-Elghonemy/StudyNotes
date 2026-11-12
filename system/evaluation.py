@@ -19,10 +19,12 @@ Design notes
   we treat as "already sent").
 """
 
+import getpass
 import json
 import os
 import platform
 import queue
+import re
 import socket
 import threading
 import tkinter as tk
@@ -189,6 +191,26 @@ def submit(record: dict) -> str:
     return "queued"
 
 
+def _sanitize_log(text: str) -> str:
+    """Replaces the current OS username with a generic placeholder before the
+    event log is sent anywhere. Windows file paths logged verbatim (e.g. a
+    saved PDF's path) otherwise carry the user's real Windows username
+    straight into the feedback record (Bug D in the review report) - the
+    user only meant to share app events, not their personal account name.
+    Matching is case-insensitive since Windows paths are themselves
+    case-insensitive. If the username can't be determined for any reason,
+    the log is returned unchanged rather than failing the whole send."""
+    if not text:
+        return text
+    try:
+        username = getpass.getuser()
+    except Exception:
+        return text
+    if not username or not username.strip():
+        return text
+    return re.sub(re.escape(username), "<user>", text, flags=re.IGNORECASE)
+
+
 def build_record(name, rating, general, changes, problems, app_version, log="") -> dict:
     def clip(s, n):
         return (s or "").strip()[:n]
@@ -201,8 +223,10 @@ def build_record(name, rating, general, changes, problems, app_version, log="") 
         "problems": clip(problems, LIMITS["text"]),
         "app_version": clip(app_version, LIMITS["app_version"]),
         "os": clip(f"{platform.system()} {platform.release()} ({platform.version()})", LIMITS["os"]),
-        # keep the END of the log - the most recent events matter most
-        "log": ((log or "").strip()[-LIMITS["log"]:]) or None,
+        # keep the END of the log - the most recent events matter most;
+        # sanitize BEFORE clipping so a username split across the clip
+        # boundary can't dodge the replacement.
+        "log": (_sanitize_log((log or "").strip())[-LIMITS["log"]:]) or None,
     }
 
 
