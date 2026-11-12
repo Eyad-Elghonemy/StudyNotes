@@ -177,6 +177,25 @@ StudyNotes coordinates background tasks through dedicated daemon threads to prev
 
 Newest first. Releases with pre-built binaries are available on the [Releases](../../releases) page.
 
+### v1.8.2 — 2026-11-12
+
+#### Fixed
+
+- **Crash on corrupted state file:** Fixed an app crash when opening lectures whose state file contained a non-dict root value (e.g. a JSON list). The file is now safely treated as corrupted and silently reset to defaults, instead of throwing an `AttributeError`.
+- **Pending feedback queue appearing as a lecture:** The offline feedback queue (`pending_feedback.json`) and the remote config cache (`remote_config_cache.json`) are now explicitly excluded from the lecture list and are protected from accidental deletion.
+- **Lectures incorrectly marked as corrupted during compression:** Chunks being compressed in the background (`.opus` file not yet finalised) no longer appear as broken — the app now falls back to the sibling `.flac` file's duration as a reliable indicator that compression is still in progress.
+- **Transcription/summarization getting stuck on unstable connections:** Added a hard 120-second HTTP-level timeout (`_HTTP_CLIENT_TIMEOUT_SEC`) to Gemini, Groq, and NVIDIA clients so a silently stalled connection always fails fast, freeing the background thread instead of leaving it blocked forever.
+- **Feedback logs including Windows username:** Event logs are now sanitised with `_sanitize_log()` before being attached to any feedback submission, replacing the real Windows account name with the placeholder `<user>`.
+- **Slow NVIDIA API key verification during first-run setup:** The validation probe now calls `client.models.list()` (a lightweight auth check) instead of a full chat completion, making the first-run wizard noticeably faster.
+- **Filename conflict when re-downloading an update:** The installer is now downloaded to a versioned temporary filename (e.g. `StudyNotes_Update_Setup_1.8.2.exe.tmp`) and atomically renamed only after a fully successful download, eliminating conflicts with leftover partial files from previous failed attempts.
+- **Part-number collision after deleting lecture audio:** `_next_part_number()` now also consults `state["transcribed_files"]` (the historical list of already-transcribed chunks), so recording a lecture again after its audio was deleted can never silently re-use a part number that was already processed.
+- **Lecture audio invisible when name contains square brackets:** Replaced all `RECORD_FOLDER.glob(f"{lecture}__*")` calls with `iterdir()` + `startswith/endswith` comparisons, preventing `pathlib` from interpreting `[` and `]` in lecture names as glob character-class patterns.
+- **Factual correction mode defaulting to off:** `enable_corrections` now falls back to `True` (matching the documented default) instead of `False`, ensuring correction markup is active out of the box even for older or incompletely migrated lecture sessions.
+- **Remote config cache writing to the wrong location:** `remote_config.py` now imports `STATE_FOLDER` (the user data directory) instead of `BASE_DIR` (the installation directory), preventing `PermissionError` failures when the app is installed in a protected folder such as `Program Files`.
+- **Atomic audio compression and update downloads:** Both `compress_to_opus()` and `download_installer()` now write to a `.tmp` intermediate file and perform an atomic `os.replace()` only after the operation fully succeeds. An interrupted compression or download can no longer leave a corrupt or partial file at the final path.
+
+---
+
 ### v1.8.1 — 2026-11-03
 
 #### Fixed
