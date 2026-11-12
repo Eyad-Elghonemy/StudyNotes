@@ -200,13 +200,13 @@ def _test_nvidia_key(key: str) -> tuple[bool, str]:
     try:
         from openai import OpenAI
         client = OpenAI(api_key=key, base_url="https://integrate.api.nvidia.com/v1")
-        # نفس فكرة الفحص الخفيف بتاع Gemini/Groq - رد بسيط جدًا كفاية
-        # للتأكد إن المفتاح مقبول من غير استهلاك quota حقيقي.
-        client.chat.completions.create(
-            model=process_lecture.NVIDIA_TEXT_MODEL,
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=1,
-        )
+        # زي نفس فكرة الفحص الخفيف بتاع Gemini/Groq فوق (models.list()) -
+        # بيتأكد من الـ authentication بس، من غير ما يعتمد على إن موديل
+        # معين (زي NVIDIA_TEXT_MODEL) يكون متاح فعليًا وقت الفحص. الطريقة
+        # القديمة (chat.completions.create بموديل بعينه) كانت بتاخد وقت
+        # أطول (Bug #17)، وكمان لو NVIDIA شالوا/غيّروا الموديل ده من
+        # كتالوجهم يوم من الأيام، الفحص كان هيفشل حتى لو المفتاح سليم 100%.
+        client.models.list()
         return True, ""
     except Exception as e:
         return False, process_lecture.friendly_error(e)
