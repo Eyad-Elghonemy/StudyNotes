@@ -27,6 +27,8 @@ raw.githubusercontent.com (قراءة ملف ثابت، مش REST API) ماله�
 """
 
 import json
+import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -99,28 +101,47 @@ def check_for_update(current_version: str, timeout: int = 8) -> dict | None:
     }
 
 
-def download_installer(download_url: str, on_progress=None) -> Path:
+def download_installer(download_url: str, on_progress=None, version: str | None = None) -> Path:
     """
     بتنزل ملف التثبيت لفولدر مؤقت على الجهاز وترجع مساره.
     on_progress (اختياري): دالة بتتنادى بنسبة مئوية (0-100) أثناء التنزيل،
     لو عايز تعرض progress bar لليوزر.
+    version (اختياري): رقم النسخة الجديدة، بيتحط في اسم الملف عشان لو
+    محاولة تحديث سابقة فشلت في النص وسابت ملف قديم/جزئي بنفس الاسم في
+    فولدر Temp، المحاولة الجديدة متتعارضش معاه (Bug #14 في تقرير
+    المراجعة). لو مش موصّلة (أو فيها رموز غريبة)، بيرجع للاسم الثابت
+    القديم زي ما هو - مفيش داعي نوقف التحميل بسبب ده.
     """
-    dest = Path(tempfile.gettempdir()) / "StudyNotes_Update_Setup.exe"
+    safe_version = re.sub(r"[^A-Za-z0-9._-]", "", version or "")
+    suffix = f"_{safe_version}" if safe_version else ""
+    dest = Path(tempfile.gettempdir()) / f"StudyNotes_Update_Setup{suffix}.exe"
+    # بنكتب على اسم مؤقت وبنعمل rename لحظي (atomic) للاسم النهائي بس
+    # بعد ما التحميل يخلص بالكامل - لو النت اتقطع في النص (انقطاع، خطأ
+    # شبكة، أي استثناء أثناء القراءة/الكتابة)، الملف الجزئي بيفضل جوه
+    # .tmp بس، ومفيش أي لحظة فيها ملف ناقص موجود على الاسم النهائي
+    # (BUG-06 في التقرير الجنائي) اللي launch_installer() ممكن تحاول
+    # تشغّله أو محاولة تحميل تانية تتلخبط معاه.
+    tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
 
     req = urllib.request.Request(download_url, headers=_HEADERS)
     with urllib.request.urlopen(req, timeout=30) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         downloaded = 0
-        with open(dest, "wb") as f:
-            while True:
-                chunk = resp.read(64 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-                if on_progress and total:
-                    on_progress(int(downloaded * 100 / total))
+        try:
+            with open(tmp_dest, "wb") as f:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if on_progress and total:
+                        on_progress(int(downloaded * 100 / total))
+        except Exception:
+            tmp_dest.unlink(missing_ok=True)
+            raise
 
+    os.replace(tmp_dest, dest)
     return dest
 
 
