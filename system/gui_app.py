@@ -78,7 +78,7 @@ import evaluation
 import updater
 import pdf_export
 
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.8.2"
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30
@@ -92,13 +92,45 @@ def _next_part_number(lecture: str) -> int:
     بيدوّر على أعلى رقم "Part N" موجود بالفعل لملفات المحاضرة دي (بأي
     صيغة: flac/opus/wav) ويرجع الرقم اللي بعده، عشان الترقيم يكمل تسلسلي
     حتى لو المستخدم قفل البرنامج وسجل تاني بعدين.
+
+    من غير فحص state["transcribed_files"] تحت: لو كل أجزاء محاضرة
+    اتفرّغت وبعدين اتمسحت من القرص (خيار "امسح الصوت بعد التفريغ")،
+    وبعدين المستخدم رجع سجّل على نفس المحاضرة تاني، الترقيم كان بيبدأ
+    من "Part 01" تاني من هنا (نسخة منفصلة عن record_session.py كانت
+    ناقصة نفس الحماية دي) - ولو الجزء الجديد اتضغط لـ Opus قبل ما
+    يتفرّغ (بيبقى اسمه مطابق حرفيًا لاسم الجزء القديم اللي اتمسح)،
+    process_lecture.py كان بيفتكر إنه "اتفرّغ قبل كده" ويتجاهله بصمت -
+    فقدان بيانات من غير أي تحذير (BUG-01 في التقرير الجنائي).
     """
+    # مش بنستخدم RECORD_FOLDER.glob() هنا عمدًا: اسم المحاضرة ممكن يحتوي
+    # على [ أو ] (مسموحين في safe_name()، مش رموز ممنوعة في أسماء ملفات
+    # ويندوز)، وpathlib.Path.glob() بتفسّر [...] كـ character-class
+    # matching (زي RegEx) مش كنص حرفي - فملفات محاضرة زي "AI [Transformers]"
+    # كانت "تختفي" من الفحص خالص (BUG-04 في التقرير الجنائي). المقارنة
+    # الحرفية (startswith/endswith) مش بتفسّر أي حرف فيها كـ pattern.
     highest = 0
-    for ext in ("opus", "flac", "wav"):
-        for p in RECORD_FOLDER.glob(f"{lecture}__Part *.{ext}"):
+    prefix = f"{lecture}__Part "
+    if RECORD_FOLDER.exists():
+        for p in RECORD_FOLDER.iterdir():
+            if not (p.is_file() and p.name.startswith(prefix)):
+                continue
+            if p.suffix.lower() not in (".opus", ".flac", ".wav"):
+                continue
             m = _PART_NUM_RE.search(p.name)
             if m:
                 highest = max(highest, int(m.group(1)))
+
+    try:
+        state = load_state(lecture)
+        for name in state.get("transcribed_files", []):
+            m = _PART_NUM_RE.search(name)
+            if m:
+                highest = max(highest, int(m.group(1)))
+    except Exception:
+        # لو فشل قراءة الـ state لأي سبب، نكمل بالرقم المحسوب من القرص
+        # بس - أحسن من ما نوقف التسجيل بالكامل بسبب الحماية الإضافية دي.
+        pass
+
     return highest + 1
 
 
@@ -566,7 +598,9 @@ class StudyApp:
 
         def worker():
             try:
-                installer_path = updater.download_installer(download_url, on_progress=on_progress)
+                installer_path = updater.download_installer(
+                    download_url, on_progress=on_progress, version=new_version
+                )
             except Exception as e:
                 self.root.after(0, lambda: self._on_update_download_failed(progress_win, e))
                 return
