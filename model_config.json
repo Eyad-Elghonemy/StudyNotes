@@ -3,7 +3,7 @@
   "updated_at": "2026-10-26T10:13:32Z",
   "summary_chain": [
 
-    {"provider": "gemini","model": "gemini-hydrogen","enabled": true},
+    {"provider": "gemini","model": "4-hydrogen","enabled": true},
     {"provider": "gemini","model": "gemini-3.8-flash","enabled": true},
     {"provider": "nvidia","model": "nvidia/nemotron-3-ultra-550b-a55b","enabled": true},
     {"provider": "groq","model": "qwen/qwen3.8-27b","enabled": true},
