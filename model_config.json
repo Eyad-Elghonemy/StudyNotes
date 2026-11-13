@@ -4,8 +4,8 @@
   "summary_chain": [
 
     {"provider": "gemini","model": "gemini-4-hydrogen","enabled": true},
-    {"provider": "gemini","model": "gemini-3.8-flash","enabled": true},
-    {"provider": "gemini","model": "gemini-3.7-flash","enabled": true},
+    {"provider": "gemini","model": "gemini-3.8-flash","enabled": false},
+    {"provider": "gemini","model": "gemini-3.7-flash","enabled": false},
     {"provider": "nvidia","model": "nvidia/nemotron-3-ultra-550b-a55b","enabled": true},
     {"provider": "groq","model": "qwen/qwen3.8-27b","enabled": true},
     {"provider": "groq","model": "openai/gpt-oss-120b","enabled": true},
