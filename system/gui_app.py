@@ -67,6 +67,8 @@ from state_manager import (
     delete_lecture_data,
     delete_specific_files,
     delete_lecture_completely,
+    rename_lecture,
+    RenameError,
     check_disk_space_mb,
     LOW_DISK_WARNING_MB,
     audio_duration_minutes_safe,
@@ -78,7 +80,7 @@ import evaluation
 import updater
 import pdf_export
 
-APP_VERSION = "1.8.2"
+APP_VERSION = "1.8.3"
 
 SAMPLE_RATE = 16000
 CHUNK_MINUTES = 30
@@ -445,6 +447,7 @@ class StudyApp:
         self.stop_flag = threading.Event()
         self.recording = False
         self.current_lecture = None
+        self._lecture_filter = "all"  # "all" / "lecture" / "meeting" - فلتر القايمة المنسدلة
         self._write_thread = None
         self.chunk_vars = {}
 
@@ -664,12 +667,9 @@ class StudyApp:
         nvidia_ok = bool(process_lecture.NVIDIA_API_KEY.strip())
         gemini_text = f"Gemini {'✓' if gemini_ok else '✗'}"
         groq_text = f"Groq {'✓' if groq_ok else '✗'}"
-        parts = [gemini_text, groq_text]
-        if nvidia_ok:
-            # NVIDIA اختياري بالكامل - بيبان بس لو فعلاً متسجل، عشان منزحمش
-            # الشريط بمفتاح تالت "✗" لكل يوزر مش مهتم بيه.
-            parts.append("NVIDIA ✓")
-        color = PALETTE["success"] if (gemini_ok or groq_ok) else PALETTE["danger"]
+        nvidia_text = f"NVIDIA {'✓' if nvidia_ok else '➕'}"
+        parts = [gemini_text, groq_text, nvidia_text]
+        color = PALETTE["success"] if (gemini_ok and groq_ok) else PALETTE["danger"]
         self.api_status_label.config(text=f"🔑 {'  |  '.join(parts)}", foreground=color)
 
     # ---------------------------------------------------------- Style
@@ -793,8 +793,33 @@ class StudyApp:
         # نقسّم لصفين - صف علوي لعناصر الجلسة (قايمة المحاضرات + جديدة)،
         # وصف تاني لحالة المفاتيح وزرار الموديلات - كل صف بمفرده بقى
         # محتاج مساحة أقل بكتير وثابت حتى مع تصغير الشاشة.
+        # فلتر سريع (شرائح مجزّأة) في صف مستقل فوق صف الكومبوبوكس - مفيد
+        # بس لما يبقى فيه عدد كبير من الجلسات المتراكمة ومختلطة (محاضرات
+        # + اجتماعات)، فالقايمة المنسدلة تبقى طويلة والوصول لنوع معين
+        # فيها بياخد وقت. الفلتر بيأثر بس على القايمة المعروضة في
+        # الكومبوبوكس - مش بيمسح ولا بيلمس أي بيانات، والمحاضرة المفتوحة
+        # حاليًا (current_lecture) بتفضل زي ما هي حتى لو مش مطابقة للفلتر
+        # الحالي. الصف ده بيحتوي على الشرائح بس - زرار "جديدة" والقلم
+        # والكومبوبوكس وباقي البادچات كلهم في top_row1 تحته زي ما كانوا
+        # من الأول، متأثروش خالص.
+        top_row_filters = ttk.Frame(frame_top, style="Card.TFrame")
+        top_row_filters.pack(fill="x", padx=10, pady=(10, 0))
+
+        self._filter_chips: dict[str, tk.Label] = {}
+        for key in ("all", "lecture", "meeting"):
+            chip = tk.Label(
+                top_row_filters, font=("Segoe UI", 8, "bold"), cursor="hand2",
+                padx=10, pady=3, relief="solid", bd=1,
+            )
+            chip.pack(side="right", padx=(4, 0))
+            chip.bind("<Button-1>", lambda e, k=key: self._set_lecture_filter(k))
+            self._filter_chips[key] = chip
+        _add_tooltip(self._filter_chips["all"], "اعرض كل الجلسات")
+        _add_tooltip(self._filter_chips["lecture"], "اعرض المحاضرات بس")
+        _add_tooltip(self._filter_chips["meeting"], "اعرض الاجتماعات بس")
+
         top_row1 = ttk.Frame(frame_top, style="Card.TFrame")
-        top_row1.pack(fill="x", padx=10, pady=(10, 4))
+        top_row1.pack(fill="x", padx=10, pady=(6, 4))
 
         top_row2 = ttk.Frame(frame_top, style="Card.TFrame")
         top_row2.pack(fill="x", padx=10, pady=(0, 10))
@@ -807,6 +832,24 @@ class StudyApp:
         self.lecture_combo.pack(side="right")
         self.lecture_combo.bind("<<ComboboxSelected>>", lambda e: self._on_lecture_change())
 
+        # أيقونة قلم لزيقة (مش زرار نصي منفصل) ملاصقة للكومبوبوكس مباشرة
+        # - دوسة واحدة تفتح نافذة تغيير اسم المحاضرة المحددة حاليًا.
+        # صورة PNG حقيقية (assets/logos/edit_pencil.png) بدل إيموجي ✏️ -
+        # الإيموجي ده بالذات بيترندر كرمز غلط (مربع/ظرف) على شوية خطوط
+        # ويندوز، فمش مضمون شكله زي ما متوقع (نفس سبب استخدام _load_logo
+        # للوجوهات المزوّدين بدل إيموجي علم/رمز لكل واحد منهم).
+        import first_run_setup
+        _rename_icon = first_run_setup._load_logo("edit_pencil.png", size=16)
+        self.rename_lecture_btn = tk.Label(
+            top_row1, image=_rename_icon, text="" if _rename_icon else "✎",
+            font=("Segoe UI", 11), bg=PALETTE["card"], fg=PALETTE["text"],
+            cursor="hand2",
+        )
+        self.rename_lecture_btn.image = _rename_icon  # مرجع يمنع الـ garbage collection
+        self.rename_lecture_btn.pack(side="right", padx=(0, 4))
+        self.rename_lecture_btn.bind("<Button-1>", lambda e: self._rename_lecture_dialog())
+        _add_tooltip(self.rename_lecture_btn, "غيّر اسم المحاضرة المحددة")
+
         new_lecture_btn = self._outline_button(
             top_row1, "➕ جديدة", self._new_lecture_dialog, PALETTE["accent"],
         )
@@ -816,13 +859,20 @@ class StudyApp:
         self.pending_badge = ttk.Label(top_row1, text="", style="Badge.TLabel", background=PALETTE["card"])
         self.pending_badge.pack(side="left", padx=2)
 
+        self.session_type_badge = ttk.Label(
+            top_row1, text="", background=PALETTE["card"], font=("Segoe UI", 9, "bold"),
+        )
+        self.session_type_badge.pack(side="left", padx=(6, 2))
+
         # حالة مفاتيح الـ API الحالية - عشان المستخدم يعرف من أول نظرة لو
         # في مزوّد ناقص، بدل ما يكتشف بس وقت فشل عملية تفريغ/تلخيص
         self.api_status_label = ttk.Label(
             top_row2, text="", background=PALETTE["card"], font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
         )
         self.api_status_label.pack(side="left")
-        _add_tooltip(self.api_status_label, "حالة مفاتيح Gemini/Groq/NVIDIA الحالية من ملف .env")
+        self.api_status_label.bind("<Button-1>", lambda e: self._open_api_keys_manager())
+        _add_tooltip(self.api_status_label, "Click to view, update, or add API keys")
 
         settings_btn = self._card_button(
             top_row2, "⚙ الموديلات", self._show_model_settings_dialog,
@@ -1090,12 +1140,20 @@ class StudyApp:
         )
         self.progress_bar.pack(side="right")
 
-        self.btn_cancel_processing = self._outline_button(
-            row_undo, "🛑 إلغاء", self._cancel_processing, PALETTE["danger"],
-            padx=8, pady=3,
+        self.btn_cancel_processing = tk.Button(
+            row_undo,
+            text="🛑 إلغاء",
+            command=self._cancel_processing,
+            font=("Segoe UI", 9, "bold"),
+            bg="#fdecea", fg=PALETTE["danger"],
+            activebackground="#f8d7da", activeforeground=PALETTE["danger"],
+            relief="solid", bd=1, highlightbackground=PALETTE["danger"],
+            cursor="hand2", padx=12, pady=5,
         )
+        self.btn_cancel_processing.bind("<Enter>", lambda e: self.btn_cancel_processing.config(bg="#f8d7da") if self.btn_cancel_processing["state"] != "disabled" else None)
+        self.btn_cancel_processing.bind("<Leave>", lambda e: self.btn_cancel_processing.config(bg="#fdecea") if self.btn_cancel_processing["state"] != "disabled" else None)
         # مخفي طول ما مفيش عملية شغالة - بيظهر بس وقت التفريغ/التلخيص
-        _add_tooltip(self.btn_cancel_processing, "وقف التفريغ/التلخيص الحالي بعد ما يخلص الجزء اللي شغال دلوقتي")
+        _add_tooltip(self.btn_cancel_processing, "إلغاء فوري للعملية الحالية وحفظ ما تم إنجازه حتى الآن")
 
         # ---------- سجل الأحداث ----------
         frame_log = ttk.LabelFrame(self.root, text="📋 سجل الأحداث", style="Card.TLabelframe")
@@ -1193,15 +1251,22 @@ class StudyApp:
 
     def _show_model_settings_dialog(self):
         import first_run_setup
-        # فحص متزامن (sync, مش async زي الزراير) لآخر نسخة من
-        # model_config.json قبل ما نبني النافذة - عشان لو حد عدّل
-        # الترتيب على GitHub، النافذة دي بالذات (اللي اليوزر فتحها
-        # بالذات عشان يشوف/يغيّر الإعدادات الحالية) تعرضه صح على طول،
-        # مش نسخة قديمة متخزنة من فحص سابق (فتح البرنامج أو آخر زرار).
-        # بلوك قصير مقبول هنا (نافذة إعدادات بتتفتح بقصد، مش في منتصف
-        # عملية حساسة للوقت زي التفريغ/التلخيص) - وبيرجع بهدوء للكاش/
-        # الافتراضي خلال نفس الـ timeout لو مفيش نت أصلاً.
-        process_lecture.remote_config.refresh()
+        # النافذة بتتفتح على طول بالقيم الموجودة فعلاً في الذاكرة
+        # (_effective_config) - دي أصلاً محمّلة من ساعة ما البرنامج فتح
+        # (فحص async في الخلفية وقت الإقلاع، سطر ~495)، فمفيش داعي
+        # لأي فحص شبكة متزامن هنا يأخّر فتح النافذة كل مرة.
+        #
+        # بنطلق فحص تاني في الخلفية هنا كمان (غير متزامن، زي فحص
+        # الإقلاع بالظبط) - مش عشان النافذة الحالية تستفيد بيه، بس عشان
+        # لو فتحتها تاني بعد كده في نفس الجلسة تكون آخر نسخة اتحمّلت.
+        # الحالة النادرة اللي محتاجة تأكيد فوري (عدّلت model_config.json
+        # دلوقتي بنفسك وعايز تشوف الأثر على طول من غير ريستارت) - زرار
+        # "🔄" صغير جوه النافذة نفسها تحت.
+        threading.Thread(target=process_lecture.remote_config.refresh, daemon=True).start()
+
+        self._build_model_settings_window(first_run_setup)
+
+    def _build_model_settings_window(self, first_run_setup):
         win = tk.Toplevel(self.root)
         win.title("Model Settings")
         win.configure(bg=PALETTE["bg"])
@@ -1225,6 +1290,40 @@ class StudyApp:
             header, text="⚙  Model Settings", bg=PALETTE["accent"], fg="white",
             font=("Segoe UI", 14, "bold"), anchor="w",
         ).pack(side="left", padx=20, pady=14)
+
+        # زرار تحديث يدوي صغير (مش طوال الوقت محتاجه - الحالة النادرة
+        # بس إنك عدّلت model_config.json على GitHub دلوقتي وعايز تتأكد
+        # فورًا من غير ريستارت). دوسة بتعمل الفحص المتزامن اللي كان بياخد
+        # وقت، بس هنا بقرار صريح من اليوزر وقت الدوسة نفسها، مش تلقائي
+        # كل مرة تفتح النافذة.
+        refresh_btn = tk.Label(
+            header, text="🔄", font=("Segoe UI", 13),
+            bg=PALETTE["accent"], fg="white", cursor="hand2",
+        )
+        refresh_btn.pack(side="right", padx=16)
+        _add_tooltip(refresh_btn, "تحديث فوري من GitHub (نادرًا ما تحتاجه)")
+
+        def _manual_refresh(event=None):
+            refresh_btn.config(text="⏳", cursor="arrow")
+            refresh_btn.unbind("<Button-1>")
+
+            def worker():
+                process_lecture.remote_config.refresh()
+                self.root.after(0, _after_refresh)
+
+            def _after_refresh():
+                # أسهل وأضمن طريقة نضمن بيها إن كل الـ dropdowns اتبنت
+                # من كتالوج طازة فعليًا، من غير ما نعقّد ونحاول نحدّث كل
+                # عنصر مكانه - نقفل النافذة الحالية ونفتح نسخة جديدة
+                # منها بنفس الكود العادي (_build_model_settings_window)
+                # اللي أصلاً بيقرا من remote_config لحظيًا كل مرة.
+                setattr(self, "_model_settings_win", None)
+                win.destroy()
+                self._build_model_settings_window(first_run_setup)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        refresh_btn.bind("<Button-1>", _manual_refresh)
 
         body = tk.Frame(win, bg=PALETTE["bg"])
         body.pack(fill="both", expand=True, padx=20, pady=(16, 8))
@@ -1537,6 +1636,12 @@ class StudyApp:
         footer = tk.Frame(win, bg=PALETTE["bg"])
         footer.pack(fill="x", padx=20, pady=(8, 18))
 
+        keys_btn = self._outline_button(
+            footer, "🔑 Manage API Keys", self._open_api_keys_manager, PALETTE["accent"],
+        )
+        keys_btn.pack(side="left")
+        _add_tooltip(keys_btn, "Update or add API keys for Gemini, Groq, and NVIDIA.")
+
         def _close_model_settings():
             self._model_settings_win = None
             win.destroy()
@@ -1663,18 +1768,245 @@ class StudyApp:
         if hasattr(self, "_refresh_model_flow_labels"):
             self._refresh_model_flow_labels()
 
+    def _open_api_keys_manager(self):
+        import first_run_setup
+        parent_win = self._model_settings_win if (
+            hasattr(self, "_model_settings_win") and self._model_settings_win and self._model_settings_win.winfo_exists()
+        ) else self.root
+
+        has_grab = False
+        if hasattr(self, "_model_settings_win") and self._model_settings_win and self._model_settings_win.winfo_exists():
+            try:
+                self._model_settings_win.grab_release()
+                has_grab = True
+            except Exception:
+                pass
+
+        def _on_done(updated_providers):
+            if has_grab and hasattr(self, "_model_settings_win") and self._model_settings_win and self._model_settings_win.winfo_exists():
+                try:
+                    self._model_settings_win.grab_set()
+                except Exception:
+                    pass
+            self._refresh_api_status_label()
+            if updated_providers:
+                names = [p.capitalize() for p in updated_providers]
+                self._log(f"✓ API key(s) updated successfully: {', '.join(names)}")
+            if hasattr(self, "_model_settings_win") and self._model_settings_win and self._model_settings_win.winfo_exists():
+                if hasattr(self, "_refresh_model_flow_labels"):
+                    self._refresh_model_flow_labels()
+
+        first_run_setup.show_keys_manager_dialog(parent_win, PALETTE, on_done=_on_done)
+
     # ---------------------------------------------------------- Lectures
+    def _session_type_of(self, state: dict) -> str:
+        """بترجع "meeting" أو "lecture" - الحقل الصريح state["session_type"]
+        (بيتكتب وقت الإنشاء في _new_lecture_dialog/_meeting_session_dialog)
+        لو موجود، وإلا بتستدل من وجود "meeting_domain" - حقل كان بيتسجل
+        بس وقت إنشاء اجتماع من قبل ما session_type نفسه يتضاف أصلاً، فأي
+        اجتماع قديم اتسجل قبل كده كان هيتعرض غلط كـ"محاضرة" من غير
+        الاستدلال ده."""
+        session_type = state.get("session_type")
+        if session_type in ("meeting", "lecture"):
+            return session_type
+        if "meeting_domain" in state:
+            return "meeting"
+        return "lecture"
+
+    def _display_for_lecture(self, lecture: str) -> str:
+        """ترجع اسم المحاضرة مع أيقونة تميز نوعها (📚 محاضرة / 👥 اجتماع)."""
+        if not lecture:
+            return ""
+        try:
+            st = load_state(lecture)
+            if self._session_type_of(st) == "meeting":
+                return f"👥 {lecture}"
+        except Exception:
+            pass
+        return f"📚 {lecture}"
+
+    def _clean_lecture_name(self, display_name: str) -> str:
+        """تستخرج الاسم الحقيقي للمحاضرة بدون أيقونة النوع."""
+        if not display_name:
+            return ""
+        for prefix in ("📚 ", "👥 ", "🗣️ ", "📚", "👥", "🗣️"):
+            if display_name.startswith(prefix):
+                return display_name[len(prefix):].strip()
+        return display_name.strip()
+
+    def _set_lecture_filter(self, filter_key: str):
+        if filter_key == self._lecture_filter:
+            return
+        self._lecture_filter = filter_key
+        self._refresh_lecture_list()
+
+    def _style_filter_chip(self, key: str, count: int, active: bool):
+        labels = {
+            "all": f"الكل ({count})",
+            "lecture": f"📚 المحاضرات ({count})",
+            "meeting": f"👥 الاجتماعات ({count})",
+        }
+        chip = self._filter_chips[key]
+        chip.config(text=labels[key])
+        if active:
+            chip.config(bg=PALETTE["accent"], fg="white")
+        else:
+            chip.config(bg=PALETTE["card"], fg=PALETTE["text_muted"])
+
     def _refresh_lecture_list(self):
         lectures = list_existing_lectures()
-        self.lecture_combo["values"] = lectures
-        if lectures and not self.lecture_var.get():
+
+        # نوع كل محاضرة بيتحسب مرة واحدة هنا بس (بدل ما _display_for_lecture
+        # يعمل load_state مستقل لكل عنصر) - بنستخدم نفس النتيجة في بناء
+        # القايمة المعروضة وفي حساب عدد الشرائح مع بعض.
+        lecture_types: dict[str, str] = {}
+        for lec in lectures:
+            try:
+                lecture_types[lec] = self._session_type_of(load_state(lec))
+            except Exception:
+                lecture_types[lec] = "lecture"
+
+        counts = {"all": len(lectures), "lecture": 0, "meeting": 0}
+        for t in lecture_types.values():
+            counts[t] = counts.get(t, 0) + 1
+        for key in ("all", "lecture", "meeting"):
+            self._style_filter_chip(key, counts[key], active=(key == self._lecture_filter))
+
+        if self._lecture_filter == "all":
+            filtered = lectures
+        else:
+            filtered = [lec for lec in lectures if lecture_types[lec] == self._lecture_filter]
+
+        icon = {"lecture": "📚", "meeting": "👥"}
+        self._display_to_real_lecture = {
+            f"{icon[lecture_types[lec]]} {lec}": lec for lec in filtered
+        }
+        display_values = list(self._display_to_real_lecture.keys())
+        self.lecture_combo["values"] = display_values
+
+        # عضوية الفحص هنا على "lectures" الكاملة (مش "filtered") عمدًا -
+        # لو المحاضرة المفتوحة حاليًا مش مطابقة لفلتر جديد اخترته (مثلاً
+        # فاتح محاضرة وبعدين دوست "👥 الاجتماعات")، تفضل هي المعروضة في
+        # الكومبوبوكس زي ما هي من غير ما تتقفل أو تتغيّر - الفلتر بيضيّق
+        # الخيارات المتاحة للاختيار بس، مش بيلمس الجلسة الشغالة فعليًا.
+        curr_real = self._clean_lecture_name(self.lecture_var.get())
+        if curr_real and curr_real in lectures:
+            self.lecture_combo.set(self._display_for_lecture(curr_real))
+        elif display_values:
             self.lecture_combo.current(0)
-        self.current_lecture = self.lecture_var.get() or None
+
+        self.current_lecture = self._clean_lecture_name(self.lecture_var.get()) or None
         self._refresh_chunks()
 
     def _on_lecture_change(self):
-        self.current_lecture = self.lecture_var.get()
+        self.current_lecture = self._clean_lecture_name(self.lecture_var.get()) or None
         self._refresh_chunks()
+
+    def _rename_lecture_dialog(self):
+        lecture = self.current_lecture
+        if not lecture:
+            show_warning("تنبيه", "اختار محاضرة/جلسة الأول.")
+            return
+        if self.recording:
+            show_warning("تنبيه", "وقّف التسجيل الأول قبل ما تغيّر اسم المحاضرة.")
+            return
+        if self._processing:
+            show_warning("تنبيه", "استنى العملية الشغالة (تفريغ/تلخيص) تخلص الأول.")
+            return
+
+        # نافذة بنفس طراز باقي نوافذ البرنامج (هيدر ملوّن + أزرار
+        # _card_button/_outline_button) بدل simpledialog.askstring
+        # الافتراضي اللي شكله مش متماشي مع باقي التصميم.
+        win = tk.Toplevel(self.root)
+        win.title("غيّر اسم المحاضرة")
+        win.configure(bg=PALETTE["bg"])
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+
+        WIDTH = 420
+        header = tk.Frame(win, bg=PALETTE["accent"], width=WIDTH)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=56)
+        tk.Label(
+            header, text="✏  غيّر اسم المحاضرة", bg=PALETTE["accent"], fg="white",
+            font=("Segoe UI", 13, "bold"), anchor="w",
+        ).pack(side="left", padx=20, pady=12)
+
+        body = tk.Frame(win, bg=PALETTE["bg"])
+        body.pack(fill="x", padx=20, pady=(18, 6))
+
+        ttk.Label(
+            body, text="الاسم الجديد:", background=PALETTE["bg"],
+            foreground=PALETTE["text"], font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="e")
+
+        name_var = tk.StringVar(value=lecture)
+        name_entry = ttk.Entry(body, textvariable=name_var, justify="right", font=("Segoe UI", 10))
+        name_entry.pack(fill="x", pady=(6, 0))
+        name_entry.focus_set()
+        name_entry.select_range(0, "end")
+
+        error_var = tk.StringVar(value="")
+        error_label = ttk.Label(
+            body, textvariable=error_var, background=PALETTE["bg"],
+            foreground=PALETTE["danger"], font=("Segoe UI", 8, "bold"),
+            justify="right", wraplength=WIDTH - 40,
+        )
+        error_label.pack(anchor="e", pady=(6, 0))
+
+        footer = tk.Frame(win, bg=PALETTE["bg"])
+        footer.pack(fill="x", padx=20, pady=(10, 18))
+
+        def _confirm(event=None):
+            new_name = name_var.get().strip()
+            if not new_name:
+                error_var.set("لازم تكتب اسم.")
+                return
+
+            new_clean = safe_name(new_name)
+            existing = list_existing_lectures()
+            if new_clean.lower() != lecture.lower() and new_clean in existing:
+                error_var.set(f"فيه محاضرة بالاسم ده (\"{new_clean}\") موجودة بالفعل.")
+                return
+
+            win.destroy()
+            threading.Thread(
+                target=self._rename_lecture_worker, args=(lecture, new_clean), daemon=True,
+            ).start()
+
+        save_btn = self._card_button(
+            footer, "✓ حفظ", _confirm, PALETTE["accent"], PALETTE["accent_dark"],
+        )
+        save_btn.pack(side="left")
+        self._outline_button(footer, "إلغاء", win.destroy, PALETTE["text_muted"]).pack(side="right")
+
+        name_entry.bind("<Return>", _confirm)
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    def _rename_lecture_worker(self, old_lecture: str, new_name: str):
+        final_name = old_lecture  # هيفضل زي ما هو لو فشلت العملية
+        try:
+            report = rename_lecture(old_lecture, new_name)
+            final_name = report["new_name"]
+            self._log_threadsafe(f"✓ اتغيّر اسم «{old_lecture}» لـ «{final_name}»")
+        except RenameError as e:
+            self._log_threadsafe(f"⚠ فشلت إعادة التسمية: {e}")
+            self.root.after(0, lambda: show_error("فشلت إعادة التسمية", str(e)))
+        except Exception as e:
+            self._log_threadsafe(f"⚠ حصل خطأ غير متوقع أثناء إعادة التسمية: {e}")
+        finally:
+            def _after():
+                # نختار المحاضرة بالاسم الجديد (مش نصفّر الاختيار زي ما
+                # بيحصل في المسح الكامل) - المستخدم لسه شغال على نفس
+                # المحاضرة، بس باسم مختلف. لو العملية فشلت، final_name
+                # هيكون لسه الاسم القديم فمفيش تغيير فعلي هنا.
+                if self._clean_lecture_name(self.lecture_var.get()) == old_lecture:
+                    self.lecture_var.set(final_name)
+                self._refresh_lecture_list()
+                self._update_title()
+            self.root.after(0, _after)
 
     def _new_lecture_dialog(self):
         """نقطة البداية الجديدة: شاشة اختيار بكارتين (محاضرة/اجتماع) -
@@ -2010,7 +2342,26 @@ class StudyApp:
                 subject = chosen
 
             clean = safe_name(name)
+            if clean in list_existing_lectures():
+                open_existing = messagebox.askyesno(
+                    "تنبيه",
+                    f"توجد جلسة مسجلة بهذا الاسم بالفعل:\n\"{clean}\"\n\n"
+                    "هل تريد فتح الجلسة الحالية ومتابعة العمل عليها؟\n\n"
+                    "(اختر 'لا' للرجوع وتغيير الاسم)",
+                    parent=win,
+                )
+                if not open_existing:
+                    name_entry.focus_set()
+                    name_entry.selection_range(0, "end")
+                    return
+                self.lecture_combo.set(self._display_for_lecture(clean))
+                self._on_lecture_change()
+                self._log(f"📂 تم فتح الجلسة الحالية: {clean}")
+                win.destroy()
+                return
+
             state = load_state(clean)
+            state["session_type"] = "lecture"
             state["subject"] = subject
             state["enable_additions"] = additions_var.get()
             state["lecture_extra1"] = extra1_var.get()
@@ -2018,11 +2369,8 @@ class StudyApp:
             state["lecture_extra3"] = extra3_var.get()
             save_state(clean, state)
 
-            values = list(self.lecture_combo["values"])
-            if clean not in values:
-                self.lecture_combo["values"] = values + [clean]
-            self.lecture_combo.set(clean)
-            self._on_lecture_change()
+            self.lecture_var.set(clean)
+            self._refresh_lecture_list()
             win.destroy()
 
         create_btn = self._card_button(
@@ -2076,7 +2424,7 @@ class StudyApp:
         header_inner = tk.Frame(header, bg=PALETTE["info"])
         header_inner.pack(fill="x", padx=20, pady=13)
         tk.Label(
-            header_inner, text="🗣  اجتماع جديد", bg=PALETTE["info"], fg="white",
+            header_inner, text="👥  اجتماع جديد", bg=PALETTE["info"], fg="white",
             font=("Segoe UI", 13, "bold"),
         ).pack(side="right")
         back_lbl = tk.Label(
@@ -2292,18 +2640,34 @@ class StudyApp:
             attendees_context = "\n".join(lines)
 
             clean = safe_name(name)
+            if clean in list_existing_lectures():
+                open_existing = messagebox.askyesno(
+                    "تنبيه",
+                    f"توجد جلسة مسجلة بهذا الاسم بالفعل:\n\"{clean}\"\n\n"
+                    "هل تريد فتح الجلسة الحالية ومتابعة العمل عليها؟\n\n"
+                    "(اختر 'لا' للرجوع وتغيير الاسم)",
+                    parent=win,
+                )
+                if not open_existing:
+                    name_entry.focus_set()
+                    name_entry.selection_range(0, "end")
+                    return
+                self.lecture_combo.set(self._display_for_lecture(clean))
+                self._on_lecture_change()
+                self._log(f"📂 تم فتح الجلسة الحالية: {clean}")
+                win.destroy()
+                return
+
             state = load_state(clean)
+            state["session_type"] = "meeting"
             state["meeting_domain"] = domain
             state["attendees"] = attendees_context
             state["meeting_extra1"] = extra1_var.get()
             state["meeting_extra2"] = extra2_var.get()
             save_state(clean, state)
 
-            values = list(self.lecture_combo["values"])
-            if clean not in values:
-                self.lecture_combo["values"] = values + [clean]
-            self.lecture_combo.set(clean)
-            self._on_lecture_change()
+            self.lecture_var.set(clean)
+            self._refresh_lecture_list()
             win.destroy()
 
         create_btn = self._card_button(
@@ -2343,10 +2707,22 @@ class StudyApp:
 
         lecture = self.current_lecture
         if not lecture:
+            if hasattr(self, "session_type_badge"):
+                self.session_type_badge.config(text="")
             self._update_selection_total()
             return
 
         state = load_state(lecture)
+        if hasattr(self, "session_type_badge"):
+            is_meeting = self._session_type_of(state) == "meeting"
+            if is_meeting:
+                self.session_type_badge.config(
+                    text="👥 اجتماع", foreground=PALETTE["info"],
+                )
+            else:
+                self.session_type_badge.config(
+                    text="📚 محاضرة", foreground=PALETTE["success"],
+                )
         chunks = list_lecture_chunks(lecture, state)
         # الملف اللي بيتسجل فيه دلوقتي فعليًا (لسه مفتوح) مستبعد تمامًا من
         # القايمة - مش نعرضه كـ"تالف"، لأنه أصلاً لسه ملقفلش ومفيش داعي
@@ -2396,8 +2772,7 @@ class StudyApp:
                 if is_corrupted:
                     _add_tooltip(
                         chk,
-                        "مدة الملف طلعت غير منطقية - غالبًا الـ header اتقفل بشكل غير سليم.\n"
-                        "جرب تصلحه برّه البرنامج: ffmpeg -i \"الملف\" -c copy fixed.flac",
+                        "جزء التسجيل ده اتقفل بشكل غير سليم وبيانات الصوت فيه ناقصة فعلاً وغير قابلة للاسترجاع.",
                     )
 
         summary = pending_summary(lecture, state)
@@ -2526,6 +2901,7 @@ class StudyApp:
         self.record_btn._normal_bg = PALETTE["neutral_bg"]
         self.status_label.config(text="🔴 بيسجّل الآن...", foreground=PALETTE["danger"])
         self.lecture_combo.config(state="disabled")
+        self.rename_lecture_btn.config(fg=PALETTE["text_muted"], cursor="arrow")
         self.pause_btn.pack(side="right", padx=(0, 8))
 
         self._recording_start_time = time.monotonic()
@@ -2548,6 +2924,7 @@ class StudyApp:
         self.record_btn._normal_bg = PALETTE["danger"]
         self.status_label.config(text="⏳ بيقفل ويضغط آخر جزء...", foreground=PALETTE["warning"])
         self.lecture_combo.config(state="readonly")
+        self.rename_lecture_btn.config(fg=PALETTE["text"], cursor="hand2")
         self.pause_btn.pack_forget()
         self._log("جاري إيقاف التسجيل...")
         self._stop_timer()
@@ -2744,6 +3121,10 @@ class StudyApp:
 
                 f.write(chunk)
                 frames_written += len(chunk)
+                try:
+                    f.flush()
+                except Exception:
+                    pass
 
                 if frames_written >= chunk_frames_limit and not self.stop_flag.is_set():
                     f.close()
@@ -2841,18 +3222,35 @@ class StudyApp:
     def _begin_processing(self):
         self._processing = True
         self._cancel_processing_event.clear()
-        self.root.after(0, self.btn_cancel_processing.pack, {"side": "left"})
+        def _show_btn():
+            self.btn_cancel_processing.config(
+                text="🛑 إلغاء", state="normal",
+                bg="#fdecea", fg=PALETTE["danger"], cursor="hand2",
+            )
+            # يظهر مباشرة على يمين شريط التقدم بتناسق تام
+            self.btn_cancel_processing.pack(side="right", padx=(8, 0))
+        self.root.after(0, _show_btn)
 
     def _end_processing(self):
         self._processing = False
-        self.root.after(0, self.btn_cancel_processing.pack_forget)
+        def _hide_btn():
+            self.btn_cancel_processing.config(
+                text="🛑 إلغاء", state="normal",
+                bg="#fdecea", fg=PALETTE["danger"], cursor="hand2",
+            )
+            self.btn_cancel_processing.pack_forget()
+        self.root.after(0, _hide_btn)
 
     def _cancel_processing(self):
         if not self._processing:
             return
-        if ask_yesno("إلغاء", "هتوقف العملية الحالية بعد ما يخلص الجزء الشغال دلوقتي. متأكد؟"):
+        if ask_yesno("إلغاء العملية", "هل تريد إلغاء العملية الجارية الآن فوراً؟\n(سيتم حفظ الأجزاء التي اكتملت بالفعل)"):
             self._cancel_processing_event.set()
-            self._log("🛑 طلب إلغاء - هيوقف بعد ما يخلص الجزء الحالي...")
+            self.btn_cancel_processing.config(
+                text="⏳ جاري الإلغاء...", state="disabled",
+                bg="#f5f5f5", fg=PALETTE["text_muted"], cursor="watch",
+            )
+            self._log("🛑 تم طلب الإلغاء الفوري - جاري إيقاف العملية وحفظ ما تم إنجازه...")
 
     def _maybe_suggest_nvidia_after_drop(self):
         """
@@ -2892,7 +3290,13 @@ class StudyApp:
                 # بيشاركوا نفس سقف الـ rate limit عند بعض المزوّدين (زي
                 # Groq)، فبنديله فرصة "يتنفس" قبل ما نبدأ نضغط عليه تاني.
                 self._log_threadsafe("⏳ استراحة قصيرة قبل مرحلة التلخيص...")
-                time.sleep(8)
+                try:
+                    process_lecture._cancellable_sleep(8.0)
+                except Exception:
+                    pass
+                if self._cancel_processing_event.is_set():
+                    self._log_threadsafe("🛑 تم إلغاء العملية قبل بدء مرحلة التلخيص.")
+                    return
                 # التلخيص بيقف عند حدود الأجزاء المحددة بس - لو فيه نص قديم
                 # متراكم من قبل كده لسه مش متلخص (مثلاً من محاولة فشلت)،
                 # مش هيتجاب زيادة عن التحديد الحالي من غير قصد.
@@ -3469,7 +3873,7 @@ class StudyApp:
             # هيحافظ على اسمها القديم (اللي بقى مش موجود في القائمة)
             # بدل ما يختار أول محاضرة متاحة بعدها.
             def _after():
-                if self.lecture_var.get() == lecture:
+                if self._clean_lecture_name(self.lecture_var.get()) == lecture:
                     self.lecture_var.set("")
                 self._refresh_lecture_list()
             self.root.after(0, _after)
