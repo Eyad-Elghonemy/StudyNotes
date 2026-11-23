@@ -158,6 +158,10 @@ def record_worker(lecture: str):
 
             f.write(chunk)
             frames_written += len(chunk)
+            try:
+                f.flush()
+            except Exception:
+                pass
 
             # وصلنا لحد الوقت المحدد للجزء ده؟ اقفله وابدأ جزء جديد
             if frames_written >= chunk_frames_limit and not stop_flag.is_set():
