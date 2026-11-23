@@ -6,7 +6,7 @@
 
 **A lightweight Windows desktop app that records system audio (online lectures, meetings, Zoom, Teams), transcribes speech with Whisper & Gemini, and generates structured, lecturer-style Markdown notes with rendered math equations — all with zero manual effort.**
 
-[![Version](https://img.shields.io/badge/version-1.8.1-blue)](../../releases/latest)
+[![Version](https://img.shields.io/badge/version-1.8.3-blue)](../../releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Tkinter](https://img.shields.io/badge/GUI-Tkinter-4c4ddc?logo=python&logoColor=white)](https://docs.python.org/3/library/tkinter.html)
 [![Gemini](https://img.shields.io/badge/AI-Gemini-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
@@ -177,7 +177,24 @@ StudyNotes coordinates background tasks through dedicated daemon threads to prev
 
 Newest first. Releases with pre-built binaries are available on the [Releases](../../releases) page.
 
-### v1.8.2 — 2026-11-12
+### v1.8.3 — 2026-11-23
+
+#### New
+- **Visual Session Differentiation & Categorization:** Added clear visual distinction across the app for Lectures (📚) vs. Meetings (👥) in the session selector dropdown and a dedicated colored badge next to the session controls.
+- **Fast Session Filter Chips:** Introduced interactive top filter chips (`الكل`, `📚 المحاضرات`, `👥 الاجتماعات`) with live session counters, enabling instant narrowing of large session lists without modifying or closing the active session.
+- **Automated Self-Healing Audio Repair:** When the application or host system closes abruptly while recording is active (leaving unfinalised FLAC files with unwritten headers and `duration N/A`), the engine now automatically detects the corrupt header, reconstructs the audio stream into a valid Opus chunk via FFmpeg, updates state duration safely, and moves the raw broken file to `_corrupted_backup/` — completely transparent to the user without manual terminal commands.
+
+#### Improved
+- **Instantaneous Job Cancellation & UX Redesign:** The processing cancellation flow no longer stalls waiting for pending network API requests or chunk pauses. Cancellation checks now poll responsively every 0.1s, immediately halting ongoing transcription and summarization tasks. Redesigned the cancel button with prominent visual styling, explicit confirmation dialog, and immediate `"⏳ جاري الإلغاء..."` state feedback.
+- **Recording Flush Safeguard:** Integrated periodic stream flushing (`f.flush()`) inside audio capture write loops (`gui_app.py` and `record_session.py`), ensuring newly recorded frames are continuously committed to disk.
+
+#### Fixed
+- **Clean Lecture Name Tracking:** Fixed lecture name comparisons during rename and delete workers (`_rename_lecture_worker` and `_delete_lecture_worker`) by properly stripping visual session icons before state lookups.
+- **Corrupted Audio Tooltip Guidance:** Updated chunk list tooltip for irrecoverable files to provide clear and reassuring guidance instead of prompting users to manually invoke CLI `ffmpeg` commands.
+
+---
+
+### v1.8.2 — 2026-11-11
 
 #### Fixed
 
@@ -303,23 +320,25 @@ Newest first. Releases with pre-built binaries are available on the [Releases](.
 
 ```text
 .
-├── system/
-│   ├── gui_app.py             # Main Tkinter GUI application & event controller
-│   ├── process_lecture.py     # AI pipeline (STT, summarization, chunking, circuit breaker)
-│   ├── remote_config.py       # Dynamic remote model config, local cache & fallback chains
-│   ├── prompts.py             # Academic subject prompts, meeting profiles & consolidation prompts
-│   ├── state_manager.py       # File hierarchy, lecture locks & state tracker (.state/*.json)
-│   ├── math_render.py         # Matplotlib headless LaTeX ($...$) to Base64 PNG renderer
-│   ├── pdf_export.py          # Headless Edge/Chrome PDF printer (RTL Arabic + CSS)
-│   ├── record_session.py      # Standalone CLI WASAPI loopback audio recorder
-│   ├── first_run_setup.py     # Onboarding setup wizard & API key validation dialogs
-│   ├── updater.py             # Auto-update checker & installer launcher
-│   └── evaluation.py          # In-app user feedback dialog & Supabase offline queue  
-│  
-├── model_config.json          # Master remote model priority & tuning configuration
-├── version.json
-├── requirements.txt           # Python dependency specifications
-└── .env.example               # Template for API keys and directory configuration
+├── gui_app.py             # Main Tkinter GUI application & event controller
+├── process_lecture.py     # AI pipeline (STT, summarization, chunking, circuit breaker)
+├── remote_config.py       # Dynamic remote model config, local cache & fallback chains
+├── prompts.py             # Academic subject prompts, meeting profiles & consolidation prompts
+├── state_manager.py       # File hierarchy, lecture locks & state tracker (.state/*.json)
+├── math_render.py         # Matplotlib headless LaTeX ($...$) to Base64 PNG renderer
+├── pdf_export.py          # Headless Edge/Chrome PDF printer (RTL Arabic + CSS)
+├── record_session.py      # WASAPI loopback audio recorder (also launchable as CLI)
+├── first_run_setup.py     # Onboarding setup wizard & API key validation dialogs
+├── updater.py             # Auto-update checker & installer launcher
+├── evaluation.py          # In-app user feedback dialog & Supabase offline queue
+├── manage_config.py       # API key & directory settings helpers
+├── manage_config_gui.py   # Settings dialog (GUI wrapper for manage_config)
+├── model_config.json      # Master remote model priority & tuning configuration
+├── version.json           # Current version & download URL (read by auto-updater)
+├── studynotes.spec        # PyInstaller build spec
+├── studynotes.iss         # Inno Setup installer script
+├── requirements.txt       # Python dependency specifications
+└── .env.example           # Template for API keys and directory configuration
 ```
 
 > **Runtime Directories:** When running, StudyNotes automatically manages data inside `%LOCALAPPDATA%\StudyNotes\` (or next to the script in portable mode):
@@ -393,19 +412,19 @@ STUDYNOTES_DIR=
 ### Graphical Interface (Recommended)
 
 ```bash
-python system/gui_app.py
+python gui_app.py
 ```
 
 ### Standalone CLI Audio Recorder
 
 ```bash
-python system/record_session.py
+python record_session.py
 ```
 
 ### Headless Batch Processing for a Specific Lecture
 
 ```bash
-python system/process_lecture.py "Lecture_Name"
+python process_lecture.py "Lecture_Name"
 ```
 
 ---
