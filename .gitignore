@@ -2,10 +2,10 @@
 __pycache__/
 *.py[codz]
 *$py.class
-.codegpt
+
 # C extensions
 *.so
- 
+
 # Distribution / packaging
 .Python
 build/
@@ -78,7 +78,6 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
-
 
 # IPython
 profile_default/
@@ -220,13 +219,14 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# ==========================================================================
-# StudyNotes: Operation Folders (local)
-# ==========================================================================
-.state/
-Markdown/
-Sound_Recorded/
-Transcript/
-system/
-build/
-dist/
+
+/Markdown
+/Sound_Recorded
+/Transcript
+/clean_env
+/assets
+/.state
+/build
+/dist
+/installer_output
+/.agents
