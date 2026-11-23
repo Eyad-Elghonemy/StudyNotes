@@ -381,7 +381,19 @@ def _short_chip_label(provider: str, model: str | None) -> str:
         # آخر جزء من اسم الموديل بس، مقصوص لو طويل جدًا - عشان موديل
         # جديد يتضاف من model_config.json بدون override يفضل مقروء.
         short = model.split("/")[-1]
-        return f"{label} {short[:14]}"
+        # أغلب موديلات Gemini (وأي مزوّد تاني ممكن يتبع نفس العادة) اسم
+        # الموديل الخام فيها بادئ باسم المزوّد نفسه ("gemini-4-hydro")،
+        # فلو سبناها زي ما هي هيتكرر اسم المزوّد مرتين جنب بعض بشكل غريب
+        # ("Gemini gemini-4-hydro"). نشيل البادئة المكررة دي بس لو
+        # موجودة فعلاً - موديل مش تابع لنفس العادة (زي "gpt-oss-120b"
+        # تحت groq) مش هيتأثر خالص.
+        prefix = f"{provider}-"
+        if short.lower().startswith(prefix):
+            short = short[len(prefix):]
+        elif short.lower() == provider.lower():
+            short = ""
+        short = short[:14]
+        return f"{label} {short}".strip() if short else label
     return label
 
 
@@ -517,11 +529,11 @@ def set_summary_model_choice(choice_key: str) -> None:
 
 def _run_with_timeout(target_callable, timeout_sec: float):
     """
-    بيشغّل target_callable() في ثريد جانبي (daemon) ولو ماخلصش قبل
-    timeout_sec، بيرجع ("timeout", None) على طول من غير ما يستنى - الثريد
-    الأصلي بيكمل شغل في الخلفية لحد ما يخلص أو يفشل، بس بيتجاهل ناتجه
-    (مفيش طريقة نضيفة نقفل استدعاء شبكة شغال فعليًا في بايثون، فأحسن حل
-    عملي إننا نسيبه وناخد قرار fallback فورًا بدل ما نستناه).
+    بيشغّل target_callable() في ثريد جانبي (daemon).
+    - إذا ضغط المستخدم على "إلغاء"، يكتشف ذلك فوراً وينهي المحاولة بإرجاع ("cancelled", None).
+    - إذا تجاوز timeout_sec، يرجع ("timeout", None) فوراً.
+    - إذا حدث خطأ، يرجع ("error", exception).
+    - إذا نجح، يرجع ("ok", value).
     """
     result_box = {}
 
@@ -533,7 +545,19 @@ def _run_with_timeout(target_callable, timeout_sec: float):
 
     t = threading.Thread(target=_wrap, daemon=True)
     t.start()
-    t.join(timeout=timeout_sec)
+
+    step = 0.1
+    elapsed = 0.0
+    while elapsed < timeout_sec:
+        if _cancelled():
+            return "cancelled", None
+        t.join(timeout=min(step, timeout_sec - elapsed))
+        if not t.is_alive():
+            break
+        elapsed += step
+
+    if _cancelled():
+        return "cancelled", None
     if t.is_alive():
         return "timeout", None
     if "error" in result_box:
@@ -656,7 +680,7 @@ def _transcribe_with_gemini(audio_path, model: str = None) -> str:
     uploaded = client.files.upload(file=str(audio_path))
     try:
         while uploaded.state.name == "PROCESSING":
-            time.sleep(2)
+            _cancellable_sleep(2.0)
             uploaded = client.files.get(name=uploaded.name)
         if uploaded.state.name == "FAILED":
             raise RuntimeError("فشل رفع الملف الصوتي لـ Gemini")
@@ -766,6 +790,9 @@ def transcribe_audio_file(audio_path) -> str:
             t0 = time.time()  # من جديد قبل كل محاولة - نفس إصلاح explain_text
             _log(f"    → بيحاول عبر {label}...")
             status, result = _run_with_timeout(fn, timeout_sec)
+
+            if status == "cancelled" or _cancelled():
+                raise _CancelledError()
 
             if status == "ok":
                 _log(f"    ✓ خلص عبر {label} ({time.time() - t0:.1f} ثانية)")
@@ -1003,6 +1030,9 @@ def explain_text(text: str, prompt: str = EXPLAIN_PROMPT) -> str:
             t0 = time.time()
             _log(f"    → بيحاول عبر {label} (ممكن ياخد وقت حسب طول الجزء)...")
             status, result = _run_with_timeout(fn, timeout_sec)
+
+            if status == "cancelled" or _cancelled():
+                raise _CancelledError()
 
             if status == "ok":
                 _log(f"    ✓ خلص عبر {label} ({time.time() - t0:.1f} ثانية)")
