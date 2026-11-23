@@ -244,9 +244,14 @@ def _save_env(gemini_key: str, groq_key: str, nvidia_key: str = "") -> None:
     os.environ["GROQ_API_KEY"] = groq_key
     process_lecture.GEMINI_API_KEY = gemini_key
     process_lecture.GROQ_API_KEY = groq_key
+    if hasattr(process_lecture, "_PROVIDER_KEY") and isinstance(process_lecture._PROVIDER_KEY, dict):
+        process_lecture._PROVIDER_KEY["gemini"] = gemini_key
+        process_lecture._PROVIDER_KEY["groq"] = groq_key
     if nvidia_key:
         os.environ["NVIDIA_API_KEY"] = nvidia_key
         process_lecture.NVIDIA_API_KEY = nvidia_key
+        if hasattr(process_lecture, "_PROVIDER_KEY") and isinstance(process_lecture._PROVIDER_KEY, dict):
+            process_lecture._PROVIDER_KEY["nvidia"] = nvidia_key
 
 
 LOGOS_DIR = PROJECT_DIR / "assets" / "logos"
@@ -769,3 +774,304 @@ class _SetupDialog:
 def show_dialog(root: tk.Tk, palette: dict, on_done=None) -> None:
     ensure_env_file_exists()
     _SetupDialog(root, palette, on_done)
+
+
+def _mask_key(key: str) -> str:
+    """Masks an API key for safe display in the UI (e.g. AIzaSy••••••••8xQ2)."""
+    if not key or not key.strip():
+        return ""
+    k = key.strip()
+    if len(k) <= 10:
+        return "••••••••"
+    return f"{k[:6]}••••••••{k[-4:]}"
+
+
+class _APIKeysManagerDialog:
+    """Dialog to view, verify, and update API keys for Gemini, Groq, and NVIDIA.
+    All UI texts, labels, buttons, and status messages are 100% in English."""
+
+    def __init__(self, root: tk.Tk, palette: dict, on_done=None):
+        self.root = root
+        self.p = palette
+        self.on_done = on_done
+
+        WIDTH = 500
+        self.win = tk.Toplevel(root)
+        self.win.title("API Keys Manager")
+        self.win.configure(bg=palette["bg"])
+        self.win.resizable(False, False)
+        self.win.transient(root)
+        self.win.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+        # Header
+        header = tk.Frame(self.win, bg=palette["accent"], width=WIDTH)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header.configure(height=64)
+
+        header_content = tk.Frame(header, bg=palette["accent"])
+        header_content.pack(fill="both", expand=True, padx=20, pady=10)
+
+        tk.Label(
+            header_content, text="🔑  API Keys Manager", bg=palette["accent"], fg="white",
+            font=("Segoe UI", 13, "bold"), anchor="w",
+        ).pack(anchor="w")
+
+        tk.Label(
+            header_content, text="View, verify, or update your AI provider keys",
+            bg=palette["accent"], fg="#e0e7ff", font=("Segoe UI", 8), anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Scrollable container for cards
+        scroll_outer = tk.Frame(self.win, bg=palette["bg"])
+        scroll_outer.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(scroll_outer, bg=palette["bg"], highlightthickness=0, width=WIDTH)
+        vsb = ttk.Scrollbar(scroll_outer, orient="vertical", command=canvas.yview)
+        body = tk.Frame(canvas, bg=palette["bg"])
+        canvas.create_window((0, 0), window=body, anchor="nw", width=WIDTH)
+        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        body_padded = tk.Frame(body, bg=palette["bg"])
+        body_padded.pack(fill="both", expand=True, padx=20, pady=(14, 6))
+
+        # Cards
+        self.vars = {}
+        self.status_labels = {}
+        self.current_mask_labels = {}
+
+        for provider in ("gemini", "groq", "nvidia"):
+            self._build_provider_card(body_padded, provider)
+
+        # Footer
+        footer = tk.Frame(self.win, bg=palette["bg"])
+        footer.pack(fill="x", padx=20, pady=(4, 14))
+
+        self.info_label = tk.Label(
+            footer, text="", bg=palette["bg"], fg=palette["danger"],
+            font=("Segoe UI", 8, "bold"), justify="left", wraplength=WIDTH - 40,
+        )
+        self.info_label.pack(anchor="w", pady=(0, 6))
+
+        btn_row = tk.Frame(footer, bg=palette["bg"])
+        btn_row.pack(fill="x")
+
+        cancel_btn = tk.Button(
+            btn_row, text="Cancel", command=self._on_cancel,
+            font=("Segoe UI", 9), bg=palette["bg"], fg=palette["text_muted"],
+            relief="flat", bd=0, cursor="hand2", padx=12, pady=6,
+        )
+        cancel_btn.pack(side="left")
+
+        self.save_btn = tk.Button(
+            btn_row, text="💾  Save & Apply", command=self._do_validate_and_save,
+            font=("Segoe UI", 10, "bold"), bg=palette["accent"], fg="white",
+            activebackground=palette["accent_dark"], activeforeground="white",
+            relief="flat", bd=0, cursor="hand2", padx=16, pady=6,
+        )
+        self.save_btn.pack(side="right")
+
+        _center_window(self.win, root, max_height_ratio=0.88)
+        self.win.update_idletasks()
+        if body.winfo_reqheight() <= canvas.winfo_height():
+            vsb.pack_forget()
+
+        self.win.grab_set()
+
+    def _get_current_key(self, provider: str) -> str:
+        if provider == "gemini":
+            return process_lecture.GEMINI_API_KEY.strip()
+        elif provider == "groq":
+            return process_lecture.GROQ_API_KEY.strip()
+        elif provider == "nvidia":
+            return process_lecture.NVIDIA_API_KEY.strip()
+        return ""
+
+    def _build_provider_card(self, parent, provider: str):
+        info = PROVIDER_INFO[provider]
+        accent_color = info.get("brand_color", self.p["accent"])
+        current_key = self._get_current_key(provider)
+        is_active = bool(current_key)
+
+        card = tk.Frame(
+            parent, bg=self.p["card"], highlightthickness=1,
+            highlightbackground=self.p["border"], highlightcolor=self.p["border"],
+        )
+        card.pack(fill="x", pady=(0, 10))
+
+        strip = tk.Frame(card, bg=accent_color, width=5)
+        strip.pack(side="left", fill="y")
+
+        inner = tk.Frame(card, bg=self.p["card"])
+        inner.pack(side="left", fill="both", expand=True, padx=14, pady=10)
+
+        # Header row inside card: Logo + Name + Status Badge
+        title_row = tk.Frame(inner, bg=self.p["card"])
+        title_row.pack(fill="x", anchor="w")
+
+        logo_photo = _load_logo(info.get("logo", ""), size=18)
+        if logo_photo is not None:
+            logo_label = tk.Label(title_row, image=logo_photo, bg=self.p["card"])
+            logo_label.image = logo_photo
+            logo_label.pack(side="left")
+
+        tk.Label(
+            title_row, text=info["display"], bg=self.p["card"], fg=self.p["text"],
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side="left", padx=(6, 8))
+
+        badge_text = "✓ Active" if is_active else ("➕ Not Configured (Optional)" if provider == "nvidia" else "➕ Not Configured")
+        badge_fg = self.p["success"] if is_active else (self.p["text_muted"] if provider == "nvidia" else self.p["warning"])
+        badge_label = tk.Label(
+            title_row, text=badge_text, bg=self.p["card"], fg=badge_fg,
+            font=("Segoe UI", 8, "bold" if is_active else "italic"),
+        )
+        badge_label.pack(side="left")
+
+        # Current key info row
+        key_preview = f"Current: {_mask_key(current_key)}" if is_active else "No key configured"
+        curr_label = tk.Label(
+            inner, text=key_preview, bg=self.p["card"], fg=self.p["text_muted"],
+            font=("Segoe UI", 8, "italic"), justify="left",
+        )
+        curr_label.pack(anchor="w", pady=(3, 4))
+        self.current_mask_labels[provider] = curr_label
+
+        # Input label and link row
+        input_row = tk.Frame(inner, bg=self.p["card"])
+        input_row.pack(fill="x", pady=(2, 2))
+
+        tk.Label(
+            input_row, text="Enter new key (leave empty to keep current):",
+            bg=self.p["card"], fg=self.p["text"], font=("Segoe UI", 8),
+        ).pack(side="left")
+
+        link_btn = tk.Button(
+            input_row, text="🔗 Get free key", command=lambda: webbrowser.open(info["url"]),
+            font=("Segoe UI", 8, "bold"), bg=self.p["card"], fg=self.p["accent"],
+            activebackground=self.p["card"], activeforeground=self.p["accent_dark"],
+            relief="flat", bd=0, cursor="hand2", padx=4, pady=0,
+        )
+        link_btn.pack(side="right")
+
+        # Entry
+        var = tk.StringVar()
+        self.vars[provider] = var
+        entry = ttk.Entry(inner, textvariable=var, width=48, justify="left", show="•")
+        entry.pack(anchor="w", fill="x", pady=(2, 2))
+        _fix_entry_keyboard_shortcuts(entry)
+
+        # Status Label
+        status = tk.Label(
+            inner, text="", bg=self.p["card"], font=("Segoe UI", 8, "bold"),
+            justify="left", wraplength=420,
+        )
+        status.pack(anchor="w", pady=(2, 0))
+        self.status_labels[provider] = status
+
+    def _do_validate_and_save(self):
+        gemini_in = self.vars["gemini"].get().strip()
+        groq_in = self.vars["groq"].get().strip()
+        nvidia_in = self.vars["nvidia"].get().strip()
+
+        # Check if there are any changes
+        if not gemini_in and not groq_in and not nvidia_in:
+            self.info_label.config(text="No key changes entered to apply.", fg=self.p["text_muted"])
+            return
+
+        self.info_label.config(text="")
+        for lbl in self.status_labels.values():
+            lbl.config(text="")
+
+        self.save_btn.config(state="disabled", text="⏳ Checking key(s)...")
+
+        inputs = {
+            "gemini": gemini_in,
+            "groq": groq_in,
+            "nvidia": nvidia_in,
+        }
+
+        threading.Thread(
+            target=self._validate_worker, args=(inputs,), daemon=True
+        ).start()
+
+    def _validate_worker(self, inputs: dict):
+        results = {}
+        for provider, new_key in inputs.items():
+            if new_key:
+                test_fn = PROVIDER_INFO[provider]["test_fn"]
+                ok, err = test_fn(new_key)
+                results[provider] = (ok, err)
+        self.win.after(0, self._on_validated, inputs, results)
+
+    def _on_validated(self, inputs: dict, results: dict):
+        self.save_btn.config(state="normal", text="💾  Save & Apply")
+
+        has_error = False
+        for provider, (ok, err) in results.items():
+            lbl = self.status_labels[provider]
+            if ok:
+                lbl.config(text="✓ Valid", fg=self.p["success"])
+            else:
+                lbl.config(text=f"✗ Invalid: {err}", fg=self.p["danger"])
+                has_error = True
+
+        if has_error:
+            self.info_label.config(
+                text="⚠ Some keys failed verification. Please fix the error(s) above.",
+                fg=self.p["danger"]
+            )
+            return
+
+        # All tested keys are valid! Update .env and in-memory values
+        final_gemini = inputs["gemini"] if inputs["gemini"] else self._get_current_key("gemini")
+        final_groq = inputs["groq"] if inputs["groq"] else self._get_current_key("groq")
+        final_nvidia = inputs["nvidia"] if inputs["nvidia"] else self._get_current_key("nvidia")
+
+        # Required check: Gemini and Groq must not end up empty
+        if not final_gemini or not final_groq:
+            self.info_label.config(
+                text="⚠ Both Gemini and Groq keys are required for StudyNotes to function.",
+                fg=self.p["danger"]
+            )
+            return
+
+        try:
+            _save_env(final_gemini, final_groq, final_nvidia)
+            # Ensure _PROVIDER_KEY is also updated for instant hot-reload
+            if hasattr(process_lecture, "_PROVIDER_KEY") and isinstance(process_lecture._PROVIDER_KEY, dict):
+                process_lecture._PROVIDER_KEY["gemini"] = final_gemini
+                process_lecture._PROVIDER_KEY["groq"] = final_groq
+                process_lecture._PROVIDER_KEY["nvidia"] = final_nvidia
+
+            # Reset circuit breakers for updated providers
+            updated_providers = [p for p, val in inputs.items() if val]
+            for p in updated_providers:
+                if hasattr(process_lecture, "_circuit_reset_provider"):
+                    process_lecture._circuit_reset_provider(p)
+
+        except Exception as e:
+            self.info_label.config(text=f"⚠ Failed to save keys: {e}", fg=self.p["danger"])
+            return
+
+        self.win.grab_release()
+        self.win.destroy()
+        if self.on_done:
+            self.on_done(updated_providers)
+
+    def _on_cancel(self):
+        self.win.grab_release()
+        self.win.destroy()
+
+
+def show_keys_manager_dialog(root: tk.Tk, palette: dict, on_done=None) -> _APIKeysManagerDialog:
+    """Opens the API Keys Manager dialog."""
+    ensure_env_file_exists()
+    return _APIKeysManagerDialog(root, palette, on_done)
